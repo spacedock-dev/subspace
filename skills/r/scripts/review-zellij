@@ -40,11 +40,11 @@ invocation_host_preflight() {
 }
 
 invocation_host_dispatch() {
-  invocation_residue='; operation: new-pane'
-  "$zellij_bin" --session "$session" action new-pane \
-    --blocking --floating --close-on-exit \
-    --tab-id "$tab_id" --cwd "$invocation_artifact_dir" -- \
-    "$invocation_tui" --actor person:reviewer --result "$invocation_result" "$invocation_artifact" \
+  invocation_residue='; operation: run'
+  "$zellij_bin" --session "$session" run \
+    --tab-id "$tab_id" --floating --close-on-exit --block-until-exit \
+    --cwd "$invocation_artifact_dir" -- \
+    "${invocation_command[@]}" \
     >/dev/null 2>/dev/null
 }
 

@@ -6,6 +6,7 @@
 
 invocation_usage() {
   printf 'usage: review-%s <file.md>\n' "$invocation_name" >&2
+  printf '   or: review-%s --review-v1 --actor ID --approver ID <briefing-file>\n' "$invocation_name" >&2
   exit 2
 }
 
@@ -33,7 +34,11 @@ invocation_canonical_file() {
     fi
   done
   parent=${path%/*}
-  [[ -n $parent ]] || parent=/
+  if [[ $path != */* ]]; then
+    parent=.
+  elif [[ -z $parent ]]; then
+    parent=/
+  fi
   parent=$(CDPATH= cd -- "$parent" && pwd -P) || return 1
   if [[ $parent == / ]]; then
     printf '/%s\n' "${path##*/}"
@@ -43,6 +48,7 @@ invocation_canonical_file() {
 }
 
 invocation_remove_empty() {
+  [[ ${invocation_profile:-one-file} == one-file ]] || return 0
   [[ ${invocation_created:-0} == 1 ]] || return 0
   rm -f -- "$invocation_fifo" "$invocation_capsule" "$invocation_capture" \
     "$invocation_trusted" 2>/dev/null || true
@@ -52,7 +58,13 @@ invocation_remove_empty() {
 
 invocation_preflight_fail() {
   invocation_remove_empty
-  printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
+  if [[ ${invocation_profile:-one-file} == explicit-briefing &&
+    ${invocation_created:-0} == 1 ]]; then
+    printf 'review-%s: %s; retained provider package: %s\n' \
+      "$invocation_name" "$1" "$invocation_dir" >&2
+  else
+    printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
+  fi
   exit "${2:-2}"
 }
 
@@ -79,11 +91,66 @@ invocation_prepare_async() {
   {
     printf '#!/usr/bin/env bash\nset +e\numask 077\ninvocation_report_status() {\n  child_status=$1\n  trap - EXIT HUP INT TERM\n  printf '\''%%s\\n'\'' "$child_status" > %q\n  exit "$child_status"\n}\ntrap '\''invocation_report_status $?'\'' EXIT\ntrap '\''invocation_report_status 129'\'' HUP\ntrap '\''invocation_report_status 130'\'' INT\ntrap '\''invocation_report_status 143'\'' TERM\ncd -- %q\nchild_status=$?\nif [[ $child_status == 0 ]]; then\n' \
       "$invocation_fifo" "$invocation_artifact_dir"
-    printf '  %q ' "$invocation_tui" --actor person:reviewer \
-      --result "$invocation_result" "$invocation_artifact"
+    printf '  %q ' "${invocation_command[@]}"
     printf '\n  child_status=$?\nfi\nexit "$child_status"\n'
   } > "$invocation_capsule" || invocation_preflight_fail 'could not create child capsule'
   chmod 700 "$invocation_capsule" || invocation_preflight_fail 'could not make child capsule private'
+}
+
+invocation_prepare_artifact() {
+  local supplied=$1
+  [[ -f $supplied && ! -L $supplied && -r $supplied ]] || \
+    invocation_preflight_fail "Artifact is not a readable regular file: $supplied"
+  invocation_artifact=$(invocation_canonical_file "$supplied") || \
+    invocation_preflight_fail 'could not canonicalize the Artifact path'
+  invocation_artifact_dir=${invocation_artifact%/*}
+  [[ -n $invocation_artifact_dir ]] || invocation_artifact_dir=/
+  [[ -d $invocation_artifact_dir && -x $invocation_artifact_dir ]] || \
+    invocation_preflight_fail "Artifact parent is not searchable: $invocation_artifact_dir"
+  if [[ $invocation_profile == one-file ]]; then
+    [[ $supplied == /* ]] || invocation_preflight_fail 'Artifact path must be absolute'
+    [[ $invocation_artifact == "$supplied" ]] || \
+      invocation_preflight_fail "Artifact path is not clean and canonical: $supplied"
+  fi
+  invocation_revision=$(shasum -a 256 "$invocation_artifact" 2>/dev/null) || \
+    invocation_preflight_fail 'could not pin the Artifact revision'
+  invocation_revision=sha256:${invocation_revision%% *}
+  [[ $invocation_revision =~ ^sha256:[0-9a-f]{64}$ ]] || \
+    invocation_preflight_fail 'Artifact revision is malformed'
+}
+
+invocation_prepare_provider() {
+  [[ $# == 6 && $1 == --review-v1 && $2 == --actor && $4 == --approver ]] || invocation_usage
+  invocation_profile=explicit-briefing
+  invocation_actor=$3
+  invocation_approver=$5
+  [[ -n ${invocation_actor//[[:space:]]/} && -n ${invocation_approver//[[:space:]]/} ]] || \
+    invocation_preflight_fail 'actor and approver must be non-empty'
+  invocation_prepare_artifact "$6"
+  local scratch
+  umask 077
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/subspace-r-provider.XXXXXX") || \
+    invocation_preflight_fail 'could not allocate provider package'
+  invocation_dir=$(CDPATH= cd -- "$scratch" && pwd -P) || {
+    rmdir -- "$scratch" 2>/dev/null || true
+    invocation_preflight_fail 'could not resolve provider package'
+  }
+  invocation_created=1
+  invocation_result=$invocation_dir/result.json
+  invocation_log=$invocation_dir/review.jsonl
+  invocation_inventory=$invocation_dir/presented-inventory.json
+  invocation_diagnostics=$invocation_dir/diagnostics
+  mkdir -- "$invocation_diagnostics" || invocation_preflight_fail 'could not create provider diagnostics'
+  invocation_capture=$invocation_diagnostics/result-capture.json
+  invocation_trusted=$invocation_diagnostics/trusted-result.json
+  invocation_fifo=$invocation_diagnostics/invocation-status.fifo
+  invocation_capsule=$invocation_diagnostics/invocation-child
+  invocation_child_exit=$invocation_diagnostics/child-exit.json
+  invocation_stderr=$invocation_diagnostics/stderr
+  invocation_argv=$invocation_diagnostics/argv.json
+  printf '%s\0' "$invocation_name" "$invocation_actor" "$invocation_approver" \
+    "$invocation_artifact" "$invocation_dir" > "$invocation_diagnostics/inputs.nul" || \
+    invocation_preflight_fail 'could not stamp provider inputs'
 }
 
 invocation_receive_async() {
@@ -92,6 +159,19 @@ invocation_receive_async() {
     invocation_preserve_fail 'completion FIFO closed without a status'
   [[ $child_status =~ ^[0-9]+$ && $child_status -le 255 ]] || \
     invocation_preserve_fail 'completion status is malformed'
+  [[ $child_status == 0 ]] || \
+    invocation_preserve_fail "Subspace exited with status $child_status" "$child_status"
+}
+
+invocation_receive_provider_sync() {
+  local child_record child_status
+  [[ -f $invocation_child_exit && ! -L $invocation_child_exit ]] || \
+    invocation_preserve_fail 'terminal returned without child-exit evidence'
+  child_record=$(<"$invocation_child_exit")
+  [[ $child_record =~ ^\{\"exit\":([0-9]+),\"argvSha256\":\"sha256:[0-9a-f]{64}\"\}$ ]] || \
+    invocation_preserve_fail 'completion status is malformed'
+  child_status=${BASH_REMATCH[1]}
+  (( child_status <= 255 )) || invocation_preserve_fail 'completion status is malformed'
   [[ $child_status == 0 ]] || \
     invocation_preserve_fail "Subspace exited with status $child_status" "$child_status"
 }
@@ -108,28 +188,18 @@ invocation_wait_for_result() {
 }
 
 invocation_main() {
-  [[ $# == 1 ]] || invocation_usage
-  local supplied=$1 found version version_status revision_status dispatch_status scratch
+  [[ $# == 1 || ${1:-} == --review-v1 ]] || invocation_usage
+  local supplied=$1 found capability_status version version_status revision_status dispatch_status scratch
   invocation_created=0
   invocation_dispatched=0
   invocation_residue=
-
-  [[ $supplied == /* ]] || invocation_preflight_fail 'Artifact path must be absolute'
-  [[ -f $supplied && ! -L $supplied && -r $supplied ]] || \
-    invocation_preflight_fail "Artifact is not a readable regular file: $supplied"
-  invocation_artifact_dir=${supplied%/*}
-  [[ -n $invocation_artifact_dir ]] || invocation_artifact_dir=/
-  [[ -d $invocation_artifact_dir && -x $invocation_artifact_dir ]] || \
-    invocation_preflight_fail "Artifact parent is not searchable: $invocation_artifact_dir"
-  invocation_artifact=$(invocation_canonical_file "$supplied") || \
-    invocation_preflight_fail 'could not canonicalize the Artifact path'
-  [[ $invocation_artifact == "$supplied" ]] || \
-    invocation_preflight_fail "Artifact path is not clean and canonical: $supplied"
-  invocation_revision=$(shasum -a 256 "$invocation_artifact" 2>/dev/null) || \
-    invocation_preflight_fail 'could not pin the Artifact revision'
-  invocation_revision=sha256:${invocation_revision%% *}
-  [[ $invocation_revision =~ ^sha256:[0-9a-f]{64}$ ]] || \
-    invocation_preflight_fail 'Artifact revision is malformed'
+  invocation_profile=one-file
+  if [[ ${1:-} == --review-v1 ]]; then
+    invocation_prepare_provider "$@"
+    supplied=$6
+  else
+    invocation_prepare_artifact "$supplied"
+  fi
 
   found=$(command -v subspace-tui 2>/dev/null) || \
     invocation_preflight_fail 'subspace-tui is unavailable; install spacedock-dev/tap/subspace-beta' 127
@@ -138,35 +208,55 @@ invocation_main() {
     invocation_preflight_fail 'could not resolve the exact subspace-tui target'
   [[ -f $invocation_tui && ! -L $invocation_tui && -x $invocation_tui ]] || \
     invocation_preflight_fail 'subspace-tui target is not an executable regular file'
-  set +e
-  version=$("$invocation_tui" --version; version_status=$?; printf '\034'; exit "$version_status")
-  version_status=$?
-  set -e
-  [[ $version_status == 0 && $version == $'0.10.0-beta.3\n\034' ]] || \
-    invocation_preflight_fail 'subspace-tui must be exactly 0.10.0-beta.3; upgrade spacedock-dev/tap/subspace-beta'
+  if [[ $invocation_profile == explicit-briefing ]]; then
+    set +e
+    "$invocation_tui" --supports review-v1-provider-package-v1 \
+      > "$invocation_diagnostics/capability.stdout" 2> "$invocation_diagnostics/capability.stderr"
+    capability_status=$?
+    set -e
+    printf '%s\n' "$capability_status" > "$invocation_diagnostics/capability.exit"
+    [[ $capability_status == 0 ]] || \
+      invocation_preflight_fail 'subspace-tui does not support review-v1-provider-package-v1'
+  else
+    set +e
+    version=$("$invocation_tui" --version; version_status=$?; printf '\034'; exit "$version_status")
+    version_status=$?
+    set -e
+    [[ $version_status == 0 && $version == $'0.10.0-beta.4\n\034' ]] || \
+      invocation_preflight_fail 'subspace-tui must be exactly 0.10.0-beta.4; upgrade spacedock-dev/tap/subspace-beta'
+  fi
   [[ -f $script_dir/validate-one-file-result && -x $script_dir/validate-one-file-result ]] || \
     invocation_preflight_fail 'canonical result validator is unavailable'
 
   invocation_host_preflight
 
   umask 077
-  scratch=$(mktemp -d "${TMPDIR:-/tmp}/subspace-r.XXXXXX") || \
-    invocation_preflight_fail 'could not create private invocation scratch'
-  invocation_dir=$(CDPATH= cd -- "$scratch" && pwd -P) || {
-    rmdir -- "$scratch" 2>/dev/null || true
-    invocation_preflight_fail 'could not canonicalize private invocation scratch'
-  }
-  invocation_result=$invocation_dir/result.json
-  invocation_capture=$invocation_dir/capture.json
-  invocation_trusted=$invocation_dir/trusted.json
-  invocation_fifo=$invocation_dir/invocation-status.fifo
-  invocation_capsule=$invocation_dir/invocation-child
-  invocation_created=1
-  chmod 700 "$invocation_dir" || invocation_preflight_fail 'could not make invocation scratch private'
-  [[ $(invocation_path_mode "$invocation_dir" || true) == 700 ]] || \
-    invocation_preflight_fail 'invocation scratch is not mode 0700'
-  [[ ! -e $invocation_result && ! -L $invocation_result ]] || \
-    invocation_preflight_fail 'result path already exists'
+  if [[ $invocation_profile == one-file ]]; then
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/subspace-r.XXXXXX") || \
+      invocation_preflight_fail 'could not create private invocation scratch'
+    invocation_dir=$(CDPATH= cd -- "$scratch" && pwd -P) || {
+      rmdir -- "$scratch" 2>/dev/null || true
+      invocation_preflight_fail 'could not canonicalize private invocation scratch'
+    }
+    invocation_result=$invocation_dir/result.json
+    invocation_capture=$invocation_dir/capture.json
+    invocation_trusted=$invocation_dir/trusted.json
+    invocation_fifo=$invocation_dir/invocation-status.fifo
+    invocation_capsule=$invocation_dir/invocation-child
+    invocation_created=1
+    chmod 700 "$invocation_dir" || invocation_preflight_fail 'could not make invocation scratch private'
+    [[ $(invocation_path_mode "$invocation_dir" || true) == 700 ]] || \
+      invocation_preflight_fail 'invocation scratch is not mode 0700'
+    invocation_child=("$invocation_tui" --actor person:reviewer --result "$invocation_result" "$invocation_artifact")
+    invocation_command=("${invocation_child[@]}")
+  else
+    invocation_child=("$invocation_tui" --review-v1 --actor "$invocation_actor" --approver "$invocation_approver" \
+      --provider-package "$invocation_dir" "$invocation_artifact")
+    invocation_command=("$invocation_tui" --provider-supervise \
+      --child-exit "$invocation_child_exit" --stderr "$invocation_stderr" \
+      --argv "$invocation_argv" -- "${invocation_child[@]}")
+  fi
+  [[ ! -e $invocation_result && ! -L $invocation_result ]] || invocation_preflight_fail 'result path already exists'
   if [[ ${invocation_async:-0} == 1 ]]; then
     invocation_prepare_async
   fi
@@ -181,33 +271,61 @@ invocation_main() {
     invocation_preserve_fail "selected host launch failed with status $dispatch_status" "$dispatch_status"
   if [[ ${invocation_async:-0} == 1 ]]; then
     invocation_receive_async
-  else
+  elif [[ $invocation_profile == explicit-briefing ]]; then
+    invocation_receive_provider_sync
+  elif [[ $invocation_profile == one-file ]]; then
     invocation_wait_for_result
   fi
   if declare -F invocation_host_complete >/dev/null; then
     invocation_host_complete
   fi
-  [[ -f $invocation_result && ! -L $invocation_result ]] || \
-    invocation_preserve_fail 'terminal returned no regular result'
-  [[ $(invocation_path_mode "$invocation_result" || true) == 600 ]] || \
-    invocation_preserve_fail 'terminal result is not mode 0600'
-  cat -- "$invocation_result" > "$invocation_capture" || \
-    invocation_preserve_fail 'could not capture the terminal result'
+  if [[ $invocation_profile == one-file ]]; then
+    [[ -f $invocation_result && ! -L $invocation_result ]] || \
+      invocation_preserve_fail 'terminal returned no regular result'
+    [[ $(invocation_path_mode "$invocation_result" || true) == 600 ]] || \
+      invocation_preserve_fail 'terminal result is not mode 0600'
+    cat -- "$invocation_result" > "$invocation_capture" || \
+      invocation_preserve_fail 'could not capture the terminal result'
+  elif [[ -e $invocation_result || -L $invocation_result ]]; then
+    [[ -f $invocation_result && ! -L $invocation_result ]] || \
+      invocation_preserve_fail 'terminal returned a non-regular result'
+    cat -- "$invocation_result" > "$invocation_capture" || \
+      invocation_preserve_fail 'could not capture the terminal result'
+  else
+    : > "$invocation_capture" || invocation_preserve_fail 'could not create missing-result capture'
+  fi
 
   set +e
-  "$script_dir/validate-one-file-result" "$invocation_artifact" "$invocation_revision" "$invocation_result" "$invocation_capture" > "$invocation_trusted"
+  if [[ $invocation_profile == one-file ]]; then
+    "$script_dir/validate-one-file-result" "$invocation_artifact" "$invocation_revision" "$invocation_result" "$invocation_capture" > "$invocation_trusted"
+  else
+    "$script_dir/validate-one-file-result" --review-v1 "$invocation_artifact" "$invocation_revision" \
+      "$invocation_actor" "$invocation_approver" "$invocation_result" "$invocation_log" \
+      "$invocation_inventory" "$invocation_child_exit" "$invocation_capture" > "$invocation_trusted"
+  fi
   revision_status=$?
   set -e
-  [[ $revision_status == 0 ]] || invocation_preserve_fail 'canonical result validation failed' "$revision_status"
+  if [[ $revision_status != 0 ]]; then
+    if [[ $invocation_profile == explicit-briefing ]]; then
+      invocation_preserve_fail 'canonical result validation failed' 1
+    fi
+    invocation_preserve_fail 'canonical result validation failed' "$revision_status"
+  fi
 
   set +e
   cat -- "$invocation_trusted"
   dispatch_status=$?
   set -e
   [[ $dispatch_status == 0 ]] || invocation_preserve_fail 'trusted result delivery failed' "$dispatch_status"
-  rm -f -- "$invocation_result" "$invocation_capture" "$invocation_trusted" \
-    "$invocation_fifo" "$invocation_capsule" || \
-    invocation_preserve_fail 'successful delivery could not clean invocation files'
-  rmdir -- "$invocation_dir" || invocation_preserve_fail 'successful delivery could not clean invocation directory'
+  if [[ $invocation_profile == one-file ]]; then
+    rm -f -- "$invocation_result" "$invocation_capture" "$invocation_trusted" \
+      "$invocation_fifo" "$invocation_capsule" || \
+      invocation_preserve_fail 'successful delivery could not clean invocation files'
+    rmdir -- "$invocation_dir" || invocation_preserve_fail 'successful delivery could not clean invocation directory'
+  else
+    rm -f -- "$invocation_capture" "$invocation_trusted" "$invocation_fifo" "$invocation_capsule" || \
+      invocation_preserve_fail 'successful provider transient cleanup failed'
+    printf 'review-%s: retained provider package: %s\n' "$invocation_name" "$invocation_dir" >&2
+  fi
   trap - HUP INT TERM
 }

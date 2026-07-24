@@ -1,6 +1,101 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ${1:-} == --review-v1 ]]; then
+  [[ $# == 10 ]] || {
+    printf 'usage: validate-one-file-result --review-v1 <briefing-file> <sha256-revision> <actor> <approver> <result> <log> <inventory> <child-exit> <capture>\n' >&2
+    exit 2
+  }
+  package=$2
+  revision=$3
+  actor=$4
+  approver=$5
+  result=$6
+  log=$7
+  inventory=$8
+  child_exit=$9
+  capture=${10}
+  for path in "$package" "$result" "$log" "$inventory" "$child_exit" "$capture"; do
+    [[ $path == /* && -f $path && ! -L $path ]] || exit 20
+  done
+  [[ $revision =~ ^sha256:[0-9a-f]{64}$ ]] || exit 20
+  [[ sha256:$(shasum -a 256 "$package" | awk '{print $1}') == "$revision" ]] || exit 20
+  cmp -s -- "$result" "$capture" || exit 20
+  jq -e '.exit == 0 and (.argvSha256 | test("^sha256:[0-9a-f]{64}$")) and
+    (keys | sort) == (["argvSha256","exit"] | sort)' "$child_exit" >/dev/null
+  argv=${child_exit%/*}/argv.json
+  [[ -f $argv && ! -L $argv ]] || exit 20
+  argv_digest=sha256:$(shasum -a 256 "$argv" | awk '{print $1}')
+  [[ $(jq -r '.argvSha256' "$child_exit") == "$argv_digest" ]] || exit 20
+  jq -e --arg package "$package" --arg actor "$actor" --arg approver "$approver" \
+    --arg result "$result" --arg log "$log" --arg inventory "$inventory" '
+      length == 9 and .[1:] == ["--review-v1","--actor",$actor,"--approver",$approver,
+        "--provider-package",($result | sub("/result.json$"; "")),$package]
+  ' "$argv" >/dev/null || exit 20
+  briefing=$(jq -er '.id | select(type == "string" and length > 0)' "$package")
+  jq -e --slurpfile package "$package" --arg briefing "$briefing" '
+    def context_nodes:
+      if type == "object" then
+        ., (. as $node | ($node | keys | sort)[] as $key | $node[$key] | context_nodes)
+      elif type == "array" then .[] | context_nodes
+      else empty end;
+    def projected:
+      [($package[0].artifacts[] | {type:"Artifact",id,uri,mediaType,rev})] +
+      [($package[0].context[] | context_nodes |
+        select(.type == "Reference" and (.id | type == "string" and length > 0)) |
+        {type:"Reference",id,uri,mediaType:(.mediaType // ""),rev:(.rev // "")})];
+    type == "object" and (keys | sort) == (["type","version","briefing","question","items"] | sort) and
+    .type == "subspace-presented-inventory" and .version == "1" and
+    ($package[0].question | type == "string" and length > 0) and
+    .briefing == $briefing and .question == $package[0].question and .items == projected and
+    ([.items[].id] | unique | length) == (.items | length)
+  ' "$inventory" >/dev/null || exit 20
+  jq -s -e --slurpfile package "$package" --slurpfile entries "$log" \
+    --arg briefing "$briefing" --arg actor "$actor" --arg approver "$approver" --arg log "$log" '
+    def nonempty: type == "string" and length > 0;
+    def includes: ((.includes // []) | type == "array" and all(.[]; nonempty) and
+      ((unique | length) == length));
+    def decision: (.decision == "approve" or .decision == "revise" or .decision == "hold") and
+      includes and (if .decision == "approve" then true else ((.reason // "") | length > 0) or ((.includes // []) | length > 0) end);
+    def open:
+      (keys | sort) == (["type","status","briefing","log"] | sort) and
+      .type == "review-v1-open-result" and .status == "open" and
+      .briefing == $briefing and .log == $log;
+    def completed:
+      .type == "review-v1-result" and .briefing == $briefing and
+      .artifact == $package[0].artifacts[0] and
+      .annotations == [$entries[] | select(.type == "Annotation")] and
+      .resolution == ($entries | map(select(.type == "Resolution"))[-1]) and
+      .decision == .resolution.decision and
+      .reason == (.resolution.reason // "") and .includes == (.resolution.includes // []) and
+      .resolution.briefing == $briefing and .resolution.by == $actor and decision and
+      if $actor == $approver then
+        (keys | sort) == (["type","briefing","artifact","annotations","resolution",
+          "decision","reason","includes"] | sort)
+      else
+        (keys | sort) == (["type","status","briefing","artifact","annotations","resolution",
+          "binding","actor","approver","resolutionId","decision","reason","includes"] | sort) and
+        .actor == $actor and .approver == $approver and
+        .resolutionId == .resolution.id and .binding == false and .status == "advisory"
+      end;
+    length == 1 and (.[0] | type == "object") and
+    if (.[0] | has("open")) then
+      (.[0] | (keys | sort) == ["open"]) and (.[0].open | open)
+    else (.[0] | completed) end
+  ' "$capture" >/dev/null || exit 20
+  if jq -e '.type == "review-v1-result"' "$capture" >/dev/null; then
+    jq -s -e --arg briefing "$briefing" --arg actor "$actor" --argjson result "$(jq -c '.resolution' "$capture")" '
+      length > 0 and .[-1].type == "Resolution" and .[-1].briefing == $briefing and
+      .[-1].by == $actor and .[-1].decision == $result.decision and
+      ((.[-1].reason // "") == ($result.reason // "")) and
+      ((.[-1].includes // []) == ($result.includes // [])) and
+      (if ($result.status // "") == "advisory" then .[-1].id == $result.resolutionId else (.[-1].id | length > 0) end)
+    ' "$log" >/dev/null || exit 20
+  fi
+  cat -- "$capture"
+  exit 0
+fi
+
 [[ $# == 4 ]] || {
   printf 'usage: validate-one-file-result <absolute-file.md> <sha256-revision> <absolute-result.json> <absolute-capture.json>\n' >&2
   exit 2

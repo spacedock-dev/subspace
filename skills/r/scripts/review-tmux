@@ -31,8 +31,7 @@ invocation_host_preflight() {
 
 invocation_host_dispatch() {
   local command
-  printf -v command '%q ' "$invocation_tui" --actor person:reviewer \
-    --result "$invocation_result" "$invocation_artifact"
+  printf -v command '%q ' "${invocation_command[@]}"
   command=${command% }
   invocation_residue='; operation: display-popup'
   "$tmux_bin" display-popup -E -t "$TMUX_PANE" -d "$invocation_artifact_dir" "$command" \
