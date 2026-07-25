@@ -1,9 +1,10 @@
 # Subspace
 
-Review one Markdown file without leaving your terminal.
+Review one Markdown file in your terminal.
 
-Subspace opens a focused reader and keeps comments and suggested changes
-attached to exact text.
+Subspace includes a companion agent skill that launches its focused reader in
+Zellij, tmux, CMUX, Herdr, Ghostty, or Apple Terminal. It sends comments and
+suggested edits directly back to the invoking agent, attached to exact text.
 
 ![A Markdown file in Subspace's focused reader](assets/review-one-file.gif)
 
@@ -17,13 +18,25 @@ brew install spacedock-dev/tap/subspace-beta
 subspace-tui path/to/file.md
 ```
 
-Select text, then press <kbd>C</kbd> to comment or <kbd>s</kbd> to suggest a
-replacement. <kbd>Ctrl</kbd>+<kbd>Y</kbd> toggles the feedback pane;
-<kbd>D</kbd> switches between distraction-free and full presentation.
+From an agent session with the companion skill installed, invoke:
+
+```text
+/r path/to/file.md
+```
+
+In Codex, invoke:
+
+```text
+$r path/to/file.md
+```
+
+Press <kbd>?</kbd> from any non-editor review surface to see its current
+keyboard shortcuts.
 
 ![A comment attached to selected text in Subspace](assets/anchored-feedback.png)
 
 ## License
 
-The released `subspace-tui` binary is proprietary and not open source. Each
-release includes its binary notice and third-party notices.
+The Subspace skills are released under Apache 2.0. The `subspace-tui` tool
+itself is not currently open source. Third-party notices will be published
+with the `0.11.0` release.

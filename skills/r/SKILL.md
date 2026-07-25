@@ -35,7 +35,7 @@ validation, and cleanup. The caller never chooses Result, log, inventory,
 diagnostics, staging, title, or mode mechanics. Do not duplicate those checks
 with model-authored shell commands.
 
-The feedback-only Markdown journey requires `0.10.0-beta.4`. That release
+The feedback-only Markdown journey requires `0.10.0-beta.5`. That release
 label is not consulted for package mode.
 
 ## Select one terminal
