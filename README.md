@@ -15,7 +15,7 @@ brew install spacedock-dev/tap/subspace-beta
 ```
 
 ```sh
-subspace-tui path/to/file.md
+sr path/to/file.md
 ```
 
 From an agent session with the companion skill installed, invoke:

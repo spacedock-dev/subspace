@@ -222,8 +222,8 @@ invocation_main() {
     version=$("$invocation_tui" --version; version_status=$?; printf '\034'; exit "$version_status")
     version_status=$?
     set -e
-    [[ $version_status == 0 && $version == $'0.10.0-beta.5\n\034' ]] || \
-      invocation_preflight_fail 'subspace-tui must be exactly 0.10.0-beta.5; upgrade spacedock-dev/tap/subspace-beta'
+    [[ $version_status == 0 && $version == $'0.10.0-beta.6\n\034' ]] || \
+      invocation_preflight_fail 'subspace-tui must be exactly 0.10.0-beta.6; upgrade spacedock-dev/tap/subspace-beta'
   fi
   [[ -f $script_dir/validate-one-file-result && -x $script_dir/validate-one-file-result ]] || \
     invocation_preflight_fail 'canonical result validator is unavailable'
