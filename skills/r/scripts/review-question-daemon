@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# The daemon. It has FOUR JOBS and no fifth.
+#
+#   1. Observe `subspace-tui`'s death.
+#   2. Publish a terminal naming which disjunct fired.
+#   3. Carry the host's reason where the host gives one.
+#   4. End a review that outlives the human budget.
+#
+# A fifth job is a stop-and-report, not a decision this script gets to make. The
+# area this replaces ran to 1,669 lines against a ~400-line journey last time,
+# which is why it has its own trip point.
+#
+# WHY IT EXISTS AT ALL. The script must EXIT to deliver the question on stdout —
+# that exit is how a background terminal hands stdout back to the agent session.
+# So between the first invocation ending and the second beginning, no process of
+# ours is running. If the agent session never returns there is no next poll, and
+# the reviewer waits forever on "waiting for the originating session answer" with
+# nobody able to tell them. The daemon is the only process that can exist in that
+# window.
+#
+# TOPOLOGY. The daemon is the SCRIPT'S CHILD, not its parent. The script mints
+# the run directory, spawns this, and exits; this outlives it. It re-invokes the
+# same per-host entry with `--question-run`, which is the ordinary blocking
+# review flow, and reads that invocation's stdout and exit status. Keeping the
+# spawner and the result-reader identical is what makes an out-of-band result
+# path unnecessary.
+#
+# usage: review-question-daemon RUN [--grace S] -- entry-argv...
+
+daemon_fail() {
+  printf 'review-question-daemon: %s\n' "$1" >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || daemon_fail 'usage: review-question-daemon RUN [options] -- entry-argv...'
+run=$1
+shift
+[[ -d $run ]] || daemon_fail "no such run directory: $run"
+[[ -f $run/config.json ]] || daemon_fail "not a question run directory: $run"
+
+# PUBLISH THE PID BEFORE ANYTHING ELSE CAN REFUSE.
+#
+# This used to sit after argument validation, and that ordering defeated the
+# daemon's entire justification. A daemon that refused a malformed budget left no
+# pid behind, so the polling legs' `daemon-gone` branch — which needs a pid to
+# test — was structurally unreachable, and the journey reported a healthy-looking
+# `waiting` forever. Attachment 3 exists precisely because a reviewer once sat on
+# "waiting for the originating session answer" with nobody able to tell them, and
+# that ordering reproduced the same wait while claiming to have fixed it.
+#
+# So the pid lands first. Every refusal below is now observable: the pid exists,
+# the process is gone, and a poll can name a disjunct instead of waiting.
+printf '%s\n' "$$" > "$run/daemon.pid"
+
+# THE HUMAN BUDGET IS GONE, and job 4 with it. Removed by captain ruling,
+# 2026-07-28, when `Q` learned to re-arm.
+#
+# It was removed rather than repaired because it could neither act nor measure.
+# It could not ACT: daemon_end_child made one kill attempt, discarded both signal
+# results, and `budget_fired` latched on the attempt rather than on the child
+# actually being gone — see `daemon-cannot-tell-it-ended-the-review`. And it could
+# not MEASURE: one timer started at `question-1.json` and was never reset, so once
+# a review could ask twice, a second question inherited whatever remained of the
+# first one's allowance and a question asked late was killed almost immediately.
+#
+# WHAT BOUNDS AN ARMED REVIEW NOW: `questionHumanBudget` in
+# `cmd/subspace-tui/v1_tui_question.go`, which is the reviewer's per-question wait
+# and always was the honest bound. It repaints its own screen, signals nothing, and
+# needs no child it cannot reliably signal. When it expires the reviewer is told no
+# answer is coming and the review stays open, because the review is theirs to
+# finish.
+#
+# THE COST, stated rather than glossed: nothing here ends a review whose reviewer
+# walks away. Job 1 still concludes when `subspace-tui` dies, so an idle float now
+# outlives its budget instead of being killed by a control that only reported
+# having tried.
+# The grace window is what keeps a dead process from DECIDING anything. A child
+# that has just exited on an ordinary completion dies slightly before the script
+# finishes writing the trusted result, so a dead-looking process may only DELAY a
+# verdict, never produce one.
+grace=3
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --grace) grace=${2:-}; shift 2 ;;
+    --) shift; break ;;
+    *) daemon_fail "unknown option: $1" ;;
+  esac
+done
+[[ $# -ge 1 ]] || daemon_fail 'no entry command given after --'
+[[ $grace =~ ^[0-9]+$ ]] || daemon_fail 'grace must be a whole number of seconds'
+
+jq_bin=$(command -v jq) || daemon_fail 'jq is required'
+
+# ---------------------------------------------------------------------------
+# Job 3: carry the host's reason where the host gives one.
+#
+# The host's reason is whatever the per-host script said on stderr before it
+# gave up — `review-zellij: selected host launch failed with status N`, or the
+# preflight refusal, or the Zellij server's own complaint. Taking its last
+# non-empty line is the whole mechanism. This is the loss the captain ruled was
+# never available to accept, and it costs three lines.
+# ---------------------------------------------------------------------------
+
+daemon_host_reason() {
+  [[ -s $run/launcher.stderr ]] || return 0
+  awk 'NF { last = $0 } END { if (last != "") print last }' "$run/launcher.stderr"
+}
+
+# ---------------------------------------------------------------------------
+# Job 2: publish a terminal naming which disjunct fired.
+#
+# An abort that says only "aborted" is why one failure in this sprint is
+# permanently undiagnosed. Every exit from this loop below names its disjunct.
+#
+# RUN is NEVER deleted, here or anywhere. A failure's own log is the only thing
+# that makes it diagnosable, and deleting one has already cost this sprint two
+# undiagnosed aborts.
+# ---------------------------------------------------------------------------
+
+daemon_publish_terminal() {
+  local disjunct=$1 reason=$2 host_reason
+  host_reason=$(daemon_host_reason)
+  "$jq_bin" -n --arg disjunct "$disjunct" --arg reason "$reason" \
+    --arg hostReason "$host_reason" \
+    '{type: "subspace-question-terminal", state: "aborted", disjunct: $disjunct, reason: $reason}
+     + (if $hostReason == "" then {} else {hostReason: $hostReason} end)' \
+    > "$run/terminal.json"
+  daemon_release_launcher
+}
+
+# daemon_release_launcher ends the invocation this daemon spawned, once its
+# outcome can no longer change anything. This is cleanup of an owned process
+# rather than a fifth job: the daemon is the only thing holding that invocation,
+# and leaving it blocked on a float that is already gone leaks a process for as
+# long as the host takes to notice.
+#
+# The launcher runs in its own process group (see `set -m` at the spawn), so the
+# group signal reaches the host client too and not just the subshell wrapping it.
+daemon_release_launcher() {
+  [[ -n ${launcher_pid:-} ]] || return 0
+  kill -TERM -"$launcher_pid" 2>/dev/null || kill -TERM "$launcher_pid" 2>/dev/null || true
+}
+
+# daemon_launcher_status echoes the recorded exit status, or nothing while no
+# complete record is on disk. The exit FILE is authoritative for whether the
+# script is finished; process liveness is only ever a hint.
+daemon_launcher_status() {
+  local record
+  [[ -f $run/launcher-exit ]] || return 0
+  record=$(<"$run/launcher-exit")
+  # A partially written record is indistinguishable from an absent one on
+  # purpose: the reader tolerates a torn read rather than the writer performing a
+  # rename ceremony for it.
+  [[ $record =~ ^\{\"exit\":([0-9]+)\}$ ]] || return 0
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+daemon_child_pid() {
+  local raw
+  [[ -f $run/child.pid ]] || return 0
+  raw=$(<"$run/child.pid")
+  raw=${raw//[^0-9]/}
+  [[ -n $raw ]] || return 0
+  printf '%s\n' "$raw"
+}
+
+# daemon_alive answers "does this process exist", which is NOT the same question
+# as "may I signal it" — and conflating them killed the captain's demo twice.
+#
+# `kill -0` fails for TWO reasons and the old one-liner threw away the only thing
+# that told them apart. ESRCH means the process is gone. EPERM means the process
+# EXISTS and is simply not ours to signal. On this member's own core asymmetry —
+# the daemon spawns the launcher, the launcher asks the Zellij SERVER for a pane,
+# and the server creates the child — the child can easily live in a permission
+# context the daemon may not signal. Measured on the captain's machine: a live
+# `subspace-tui` returned "operation not permitted" and was declared dead three
+# seconds after publishing its pid.
+#
+# So only ESRCH is evidence of death. Every other failure means we CANNOT
+# CONCLUDE, and this member's binding condition is that a verdict may be DELAYED
+# but never wrong. `LC_ALL=C` pins the message text so the match does not depend
+# on the operator's locale.
+daemon_alive() {
+  local err
+  err=$(LC_ALL=C kill -0 "$1" 2>&1) && return 0
+  case $err in
+    *'No such process'*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+daemon_has_result() { [[ -s $run/trusted-result.json ]]; }
+
+# ---------------------------------------------------------------------------
+# Spawn and capture. The subshell records the script's exit where the poll legs
+# and this loop both read it, so no process has to be reaped to learn the
+# outcome and a zombie can never be mistaken for a live review.
+# ---------------------------------------------------------------------------
+
+# `set -m` puts the invocation in its own process group, which is what lets
+# daemon_release_launcher signal the host client along with the subshell wrapping
+# it, without the signal coming back around to this daemon.
+set -m
+(
+  "$@" > "$run/trusted-result.json" 2> "$run/launcher.stderr"
+  printf '{"exit":%d}\n' "$?" > "$run/launcher-exit"
+) &
+launcher_pid=$!
+set +m
+printf '%s\n' "$launcher_pid" > "$run/launcher.pid"
+
+# ---------------------------------------------------------------------------
+# ONE AUTHORITY OVER THE VERDICT.
+#
+# The mechanism once had two: a wall-clock budget that published its own terminal,
+# and the launcher's completion record. Two authorities over one verdict is a
+# boundary, and a review completing on that boundary could be killed and reported
+# `human-budget` when its validated output already existed. That was first narrowed
+# so the budget decided nothing and only caused an exit; the budget is now gone
+# entirely, so the launcher's record is the only authority left and the
+# `human-budget` disjunct no longer exists.
+#
+# daemon_conclude remains the only function that ends this process.
+# ---------------------------------------------------------------------------
+
+# daemon_conclude decides the verdict and ends the daemon. Its argument is the
+# launcher's recorded exit status, or empty when the launcher has not recorded
+# one. It never returns.
+daemon_conclude() {
+  local status=$1
+
+  # A PUBLISHED REVIEW RESULT WINS OVER EVERY LIFECYCLE VERDICT, always and
+  # first. Once the reviewer's work has been validated and written down, nothing
+  # this daemon believes about processes may discard it.
+  if daemon_has_result && [[ -z $status || $status == 0 ]]; then
+    exit 0
+  fi
+
+  if [[ -n $status && $status != 0 ]]; then
+    daemon_publish_terminal launcher-exited-nonzero \
+      "the review script exited with status $status"
+  elif [[ -z $status ]]; then
+    daemon_publish_terminal child-died \
+      "subspace-tui is gone and no result arrived within ${grace}s"
+  elif [[ -z $child_pid ]]; then
+    daemon_publish_terminal child-never-started \
+      'the review script exited without subspace-tui ever publishing a pid'
+  else
+    daemon_publish_terminal launcher-exited-without-result \
+      'the review script exited successfully but published no trusted result'
+  fi
+  exit 0
+}
+
+started=$SECONDS
+child_pid=
+child_gone_at=
+
+while :; do
+  [[ -n $child_pid ]] || child_pid=$(daemon_child_pid)
+
+  # The launcher's exit record is the ordinary way this run ends.
+  status=$(daemon_launcher_status)
+  if [[ -n $status ]]; then
+    daemon_conclude "$status"
+  fi
+
+  # Job 1: observe `subspace-tui`'s death.
+  #
+  # A dead child may only DELAY a verdict. On an ordinary completion the child
+  # exits slightly before the script finishes writing the trusted result, so the
+  # grace window is what keeps a successful review from being called aborted —
+  # and daemon_conclude checks for that result again before deciding anything.
+  if [[ -n $child_pid ]] && ! daemon_alive "$child_pid"; then
+    if [[ -z $child_gone_at ]]; then
+      child_gone_at=$SECONDS
+    elif (( SECONDS - child_gone_at >= grace )); then
+      daemon_conclude ""
+    fi
+  else
+    child_gone_at=
+  fi
+
+  sleep 0.2
+done

@@ -38,5 +38,6 @@ keyboard shortcuts.
 ## License
 
 The Subspace skills are released under Apache 2.0. The `subspace-tui` tool
-itself is not currently open source. Third-party notices will be published
-with the `0.11.0` release.
+itself is not currently open source. The permissions and attributions for
+external code linked into the tool are published in
+[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).

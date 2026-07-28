@@ -3,13 +3,21 @@ set -euo pipefail
 
 if [[ ${1:-} == --review-v1 ]]; then
   [[ $# == 10 ]] || {
-    printf 'usage: validate-one-file-result --review-v1 <briefing-file> <sha256-revision> <actor> <approver> <result> <log> <inventory> <child-exit> <capture>\n' >&2
+    printf 'usage: validate-one-file-result --review-v1 <briefing-file> <sha256-revision> <actor> <mode> <result> <log> <inventory> <child-exit> <capture>\n' >&2
     exit 2
   }
   package=$2
   revision=$3
   actor=$4
-  approver=$5
+  # The declared mode arrives from the invocation. It is never read from the
+  # Result being audited: that Result's author is exactly what this script is
+  # checking, and trusting its own claim would delete the cross-check that
+  # previously caught a forged binding envelope at exit 0.
+  declared_mode=$5
+  case $declared_mode in
+    feedback | advisory | binding) ;;
+    *) exit 20 ;;
+  esac
   result=$6
   log=$7
   inventory=$8
@@ -27,9 +35,9 @@ if [[ ${1:-} == --review-v1 ]]; then
   [[ -f $argv && ! -L $argv ]] || exit 20
   argv_digest=sha256:$(shasum -a 256 "$argv" | awk '{print $1}')
   [[ $(jq -r '.argvSha256' "$child_exit") == "$argv_digest" ]] || exit 20
-  jq -e --arg package "$package" --arg actor "$actor" --arg approver "$approver" \
+  jq -e --arg package "$package" --arg actor "$actor" --arg mode "$declared_mode" \
     --arg result "$result" --arg log "$log" --arg inventory "$inventory" '
-      length == 9 and .[1:] == ["--review-v1","--actor",$actor,"--approver",$approver,
+      length == 9 and .[1:] == ["--review-v1","--actor",$actor,"--mode",$mode,
         "--provider-package",($result | sub("/result.json$"; "")),$package]
   ' "$argv" >/dev/null || exit 20
   briefing=$(jq -er '.id | select(type == "string" and length > 0)' "$package")
@@ -51,7 +59,7 @@ if [[ ${1:-} == --review-v1 ]]; then
     ([.items[].id] | unique | length) == (.items | length)
   ' "$inventory" >/dev/null || exit 20
   jq -s -e --slurpfile package "$package" --slurpfile entries "$log" \
-    --arg briefing "$briefing" --arg actor "$actor" --arg approver "$approver" --arg log "$log" '
+    --arg briefing "$briefing" --arg actor "$actor" --arg mode "$declared_mode" --arg log "$log" '
     def nonempty: type == "string" and length > 0;
     def includes: ((.includes // []) | type == "array" and all(.[]; nonempty) and
       ((unique | length) == length));
@@ -61,49 +69,58 @@ if [[ ${1:-} == --review-v1 ]]; then
       (keys | sort) == (["type","status","briefing","log"] | sort) and
       .type == "review-v1-open-result" and .status == "open" and
       .briefing == $briefing and .log == $log;
-    def completed:
-      .type == "review-v1-result" and .briefing == $briefing and
-      .artifact == $package[0].artifacts[0] and
+    def feedback_completed:
+      (keys | sort) == (["type","mode","briefing","artifact","annotations","actor"] | sort) and
+      .type == "review-v1-result" and .mode == $mode and .briefing == $briefing and
+      .artifact == $package[0].artifacts[0] and .actor == $actor and
+      .annotations == [$entries[] | select(.type == "Annotation")] and
+      ($entries | map(select(.type == "Resolution")) | length) == 0;
+    def decision_completed:
+      (keys | sort) == (["type","mode","briefing","artifact","annotations","resolution",
+        "binding","actor","resolutionId","decision","reason","includes"] | sort) and
+      .type == "review-v1-result" and .mode == $mode and .briefing == $briefing and
+      .artifact == $package[0].artifacts[0] and .actor == $actor and
       .annotations == [$entries[] | select(.type == "Annotation")] and
       .resolution == ($entries | map(select(.type == "Resolution"))[-1]) and
       .decision == .resolution.decision and
       .reason == (.resolution.reason // "") and .includes == (.resolution.includes // []) and
       .resolution.briefing == $briefing and .resolution.by == $actor and decision and
-      if $actor == $approver then
-        (keys | sort) == (["type","briefing","artifact","annotations","resolution",
-          "decision","reason","includes"] | sort)
-      else
-        (keys | sort) == (["type","status","briefing","artifact","annotations","resolution",
-          "binding","actor","approver","resolutionId","decision","reason","includes"] | sort) and
-        .actor == $actor and .approver == $approver and
-        .resolutionId == .resolution.id and .binding == false and .status == "advisory"
-      end;
+      .resolutionId == .resolution.id and .binding == ($mode == "binding");
+    def completed:
+      if $mode == "feedback" then feedback_completed else decision_completed end;
     length == 1 and (.[0] | type == "object") and
     if (.[0] | has("open")) then
       (.[0] | (keys | sort) == ["open"]) and (.[0].open | open)
     else (.[0] | completed) end
   ' "$capture" >/dev/null || exit 20
-  if jq -e '.type == "review-v1-result"' "$capture" >/dev/null; then
+  if [[ $declared_mode != feedback ]] && jq -e '.type == "review-v1-result"' "$capture" >/dev/null; then
     jq -s -e --arg briefing "$briefing" --arg actor "$actor" --argjson result "$(jq -c '.resolution' "$capture")" '
       length > 0 and .[-1].type == "Resolution" and .[-1].briefing == $briefing and
       .[-1].by == $actor and .[-1].decision == $result.decision and
       ((.[-1].reason // "") == ($result.reason // "")) and
       ((.[-1].includes // []) == ($result.includes // [])) and
-      (if ($result.status // "") == "advisory" then .[-1].id == $result.resolutionId else (.[-1].id | length > 0) end)
+      (.[-1].id | length > 0) and .[-1].id == $result.id
     ' "$log" >/dev/null || exit 20
   fi
   cat -- "$capture"
   exit 0
 fi
 
-[[ $# == 4 ]] || {
-  printf 'usage: validate-one-file-result <absolute-file.md> <sha256-revision> <absolute-result.json> <absolute-capture.json>\n' >&2
+[[ $# == 5 ]] || {
+  printf 'usage: validate-one-file-result <absolute-file.md> <sha256-revision> <mode> <absolute-result.json> <absolute-capture.json>\n' >&2
   exit 2
 }
 artifact=$1
 revision=$2
-result=$3
-capture=$4
+# Same rule as the provider profile: the expected mode comes from the
+# invocation, never from the Result under audit.
+declared_mode=$3
+result=$4
+capture=$5
+case $declared_mode in
+  feedback | advisory | binding) ;;
+  *) exit 20 ;;
+esac
 
 [[ $artifact == /* && $result == /* && $capture == /* ]] || exit 20
 [[ -f $result && ! -L $result && -f $capture && ! -L $capture ]] || exit 20
@@ -115,7 +132,7 @@ result_mode=$(stat -f '%Lp' "$result" 2>/dev/null || stat -c '%a' "$result" 2>/d
 briefing_hash=$(printf 'subspace:one-file-invocation:v1\0%s' "$result" | shasum -a 256 | awk '{print $1}')
 briefing=briefing:single-file:$(printf '%.32s' "$briefing_hash")
 
-jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$briefing" '
+jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$briefing" --arg mode "$declared_mode" '
   def exact_keys($want): (keys | sort) == ($want | sort);
   def nonempty: type == "string" and length > 0;
   def selector:
@@ -141,12 +158,34 @@ jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$
   def artifact_identity:
     exact_keys(["id","uri","mediaType","rev"]) and
     . == {id:"artifact:primary",uri:$artifact,mediaType:"text/markdown",rev:$revision};
-  def feedback:
-    exact_keys(["type","status","briefing","artifact","annotations","actor"]) and
-    .type == "review-v1-result" and .status == "feedback" and .briefing == $briefing and
-    (.artifact | artifact_identity) and .actor == "person:reviewer" and
+  def annotations_ok:
     (.annotations | type == "array") and all(.annotations[]; annotation) and
     (([.annotations[].id] | unique | length) == (.annotations | length));
+  def feedback:
+    exact_keys(["type","mode","briefing","artifact","annotations","actor"]) and
+    .type == "review-v1-result" and .mode == $mode and $mode == "feedback" and
+    .briefing == $briefing and
+    (.artifact | artifact_identity) and .actor == "person:reviewer" and annotations_ok;
+  def resolution_entry:
+    type == "object" and
+    (all(keys[]; . == "type" or . == "id" or . == "briefing" or . == "by" or
+      . == "at" or . == "decision" or . == "reason" or . == "includes")) and
+    .type == "Resolution" and (.id | nonempty) and .briefing == $briefing and
+    .by == "person:reviewer" and (.at | nonempty) and
+    (.decision == "approve" or .decision == "revise" or .decision == "hold");
+  def decision_result:
+    exact_keys(["type","mode","briefing","artifact","annotations","resolution",
+      "binding","actor","resolutionId","decision","reason","includes"]) and
+    .type == "review-v1-result" and .mode == $mode and
+    ($mode == "advisory" or $mode == "binding") and
+    .briefing == $briefing and (.artifact | artifact_identity) and
+    .actor == "person:reviewer" and annotations_ok and
+    (.resolution | resolution_entry) and
+    .binding == ($mode == "binding") and
+    .resolutionId == .resolution.id and .decision == .resolution.decision and
+    .reason == (.resolution.reason // "") and
+    .includes == (.resolution.includes // []) and
+    (.includes | type == "array" and ((unique | length) == length));
   def open($root):
     exact_keys(["type","status","briefing","artifact","package","log"]) and
     .type == "review-v1-open-result" and .status == "open" and .briefing == $briefing and
@@ -156,10 +195,10 @@ jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$
     (.log | nonempty and . == ($root.package + "/briefing.review.jsonl"));
   if length != 1 or (.[0] | type) != "object" then error("exactly one result object is required")
   else .[0] as $root |
-    if ($root | feedback) or ($root | open($root)) then true
+    if ($root | feedback) or ($root | decision_result) or ($root | open($root)) then true
     else error("invalid one-file result") end
   end
-' "$capture" >/dev/null
+' "$capture" >/dev/null || exit 20
 
 [[ $(head -c 1 "$capture") == '{' ]] || exit 20
 last_byte=$(tail -c 1 "$capture" | od -An -t x1 | tr -d ' ')
@@ -189,7 +228,7 @@ if [[ $(jq -r '.status' "$capture") == open ]]; then
       .type == "Briefing" and .version == "1" and .id == $briefing and
       .question == "What should the requester know about this artifact?" and .context == [] and
       .artifacts == [{id:"artifact:primary",uri:$artifact,mediaType:"text/markdown",rev:$revision}])
-  ' "$briefing_path" >/dev/null
+  ' "$briefing_path" >/dev/null || exit 20
   if [[ -e $log || -L $log ]]; then
     [[ -s $log && -f $log && ! -L $log ]] || exit 20
     log_mode=$(stat -f '%Lp' "$log" 2>/dev/null || stat -c '%a' "$log" 2>/dev/null) || exit 20
@@ -210,7 +249,7 @@ if [[ $(jq -r '.status' "$capture") == open ]]; then
         elif .kind == "suggestion" then (.original | type == "string") and (.proposed | type == "string") and (.selectors | type == "array" and length > 0) and (has("body") | not)
         else false end;
       length > 0 and all(.[]; annotation) and (([.[].id] | unique | length) == length)
-    ' "$log" >/dev/null
+    ' "$log" >/dev/null || exit 20
   fi
 fi
 

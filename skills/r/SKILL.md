@@ -8,8 +8,8 @@ description: Review one readable Markdown file for feedback or present one canon
 Accept one of these disjoint forms:
 
 ```text
-<file.md> [terminal]
---review-v1 --actor <actor> --approver <approver>
+[--allow-question] [--mode <feedback|advisory|binding>] <file.md> [terminal]
+--review-v1 --actor <actor> --mode <feedback|advisory|binding>
   <briefing-file> [terminal]
 ```
 
@@ -20,23 +20,32 @@ terminal chooses presentation wiring only; never pass its name to an entry or
 the TUI. The explicit `--review-v1` token selects package mode. Never infer a
 profile from a suffix or file content.
 
-Resolve Markdown to one clean absolute, readable, non-symlink regular file and
-require its parent to be searchable. Markdown keeps the native feedback-only
-profile. Package mode requires only one readable regular Briefing file plus
-non-empty actor and approver values. Its filename, relative or absolute
+For a plain file, resolve its relative, absolute, or symlinked Markdown locator
+to one readable regular target with a searchable resolved parent. The selected
+entry owns physical resolution and SHA-256 pinning. On a plain file `--mode` is
+optional and defaults to `feedback`: omitting it requests no authority, so
+nothing is inferred. Declaring `advisory` or `binding` is how authority is
+asked for, and Subspace never infers it from the source shape or from comparing
+identities. `--allow-question` is a second independent optional modifier on that
+same form — the same review, optionally questionable — and never a form of its
+own; see *Answer one question during a review*.
+Package mode requires only one readable regular Briefing file plus
+a non-empty actor and a declared mode. Its filename, relative or absolute
 spelling, parent permissions, and Unix mode are not Review v1 preconditions.
 The canonical loader establishes that the content is a valid Briefing.
 
 The selected fixed entry owns path resolution, revision pinning, exact
 `subspace-tui` resolution, the literal
-`review-v1-provider-package-v1` capability check, allocation of one fresh
+`review-v1-provider-package-v1` and `review-v1-resolution-mode-v1` capability
+checks, allocation of one fresh
 retained provider package, host preflight, launch, delivery, canonical
 validation, and cleanup. The caller never chooses Result, log, inventory,
 diagnostics, staging, title, or mode mechanics. Do not duplicate those checks
 with model-authored shell commands.
 
-The feedback-only Markdown journey requires `0.10.0-beta.6`. That release
-label is not consulted for package mode.
+Both journeys probe `review-v1-resolution-mode-v1` and refuse to launch against
+a binary that cannot carry a declared mode. No exact release label is consulted
+for either journey.
 
 ## Select one terminal
 
@@ -58,7 +67,7 @@ healthy. A missing binary, unavailable operation, ambiguous caller, inaccessible
 server, malformed probe, or broken selected host also stops without trying a
 later terminal. If no family is present and the operating system is macOS,
 select Apple Terminal and invoke
-`review-apple-terminal <clean-absolute-file.md>` exactly once. On other
+`review-apple-terminal [--mode <feedback|advisory|binding>] <file.md>` exactly once. On other
 operating systems, report the supported names and ask for an explicit terminal.
 Never probe two hosts.
 
@@ -97,9 +106,9 @@ exactly one selected fixed entry point in one tool call with separate argv
 entries:
 
 ```text
-review-<selected-terminal> <clean-absolute-file.md>
+review-<selected-terminal> [--allow-question] [--mode <feedback|advisory|binding>] <file.md>
 review-<selected-terminal> --review-v1 --actor <actor>
-  --approver <approver> <briefing-file>
+  --mode <feedback|advisory|binding> <briefing-file>
 ```
 
 Do not run a plan, prerequisite probe, version check, scratch command,
@@ -107,6 +116,13 @@ validator, cleanup, retry, or second entry in another tool call. Keep the one
 blocking call and invoking turn alive until it returns. A nonzero return after
 launch includes a recoverable scratch path; report it and stop without another
 host or launch.
+
+An armed review is the single exception. `--allow-question` cannot finish inside
+one blocking call, because the session that has to answer is blocked inside it,
+so that journey is a sequence of invocations of the same selected entry as
+described in *Answer one question during a review*. It authorizes nothing else:
+still no plan, probe, version check, scratch command, validator, cleanup, retry,
+second host, or second launch.
 
 ### Host-owned placement
 
@@ -133,8 +149,9 @@ publishes its result; that wait is not a retry or relaunch.
 
 In package mode, common mechanics allocate one fresh retained provider package
 and the fixed entry starts one private provider supervisor. The supervisor
-launches the exact `subspace-tui --review-v1 --actor <actor> --approver
-<approver> --provider-package <provider-root> <briefing-file>` child, waits for
+launches the exact `subspace-tui --review-v1 --actor <actor> --mode
+<feedback|advisory|binding> --provider-package <provider-root> <briefing-file>`
+child, waits for
 that PID, and atomically records its exit. `--provider-package` is private
 Subspace wiring, never caller grammar. Result publication, pane creation, and
 launcher return never authorize validation or delivery. The common lifecycle
@@ -155,6 +172,54 @@ profiles, the binary renders the TUI and atomically publishes the result; the
 entries own lifecycle and host placement. Do not add a second result, parser,
 generic adapter, or terminal registry.
 
+## Answer one question during a review
+
+`--allow-question` lets the reviewer ask this session one question about the
+document while the review is open, and read the answer in the same surface. Pass
+it when the user asks for a review they may want to interrogate; otherwise leave
+it off.
+
+Arming changes this skill's completion contract, and the change lands even when
+nobody asks anything. Each invocation returns as soon as it has something to
+report rather than when the review ends, so a finished review is learned by
+invoking the entry again — never by assuming that a quiet return means nothing
+happened. Expect roughly one extra invocation per ninety seconds the reviewer
+spends reading. That cost is why the flag is opt-in and not the default.
+
+Each invocation returns exactly one JSON object naming a `state`. Act on it:
+
+- `question` — the reviewer asked. Answer it from the pinned Artifact at the
+  reported `artifact` path, write the answer to one private text file, and
+  invoke the entry once with `--answer-question --text-file <file>`.
+- `answered` — the review took the answer and is still open. Invoke again.
+- `waiting` — nothing is decided yet and the review is untouched. Invoke again.
+  This never means the review is idle and never means it is over.
+- `abandoned` — the reviewer left the question before the answer arrived. The
+  review is unaffected. Invoke again.
+- `declined` — this session gave up on the question. The review is unaffected.
+- `result` — the review finished. Report it exactly as *Report the returned
+  record* requires and stop.
+- `aborted` — the review ended with no result. Report the returned `reason` and
+  `hostReason` and stop without another host or launch.
+
+Invoke again with `--poll-question` and nothing else. Answer with
+`--answer-question --text-file <file>` and nothing else. Give up on a question
+with `--decline-question --reason <text>` and nothing else, rather than leaving
+a reviewer watching for an answer that is not coming. The selected entry finds
+the review each of these belongs to on its own; when more than one review is
+open it refuses and names the documents in play rather than guessing. Never
+construct, parse, store, or pass a run directory, and never invoke a bundled
+script other than the selected entry.
+
+Answer only from the pinned Artifact and what the user's request already
+established. The answer is prose the reviewer reads: it carries no checked
+evidence and no authority of its own, and answering never records a Decision,
+grants binding authority, or edits the Artifact. Say plainly when the document
+does not settle the question.
+
+An armed review implements `feedback` only. Declaring `advisory` or `binding`
+alongside `--allow-question` is refused by name before anything is created.
+
 ## Report the returned record
 
 The bundled `validate-one-file-result` executable is the only result authority.
@@ -169,12 +234,13 @@ continuation. Never call a plain-file outcome an approval, Decision,
 Resolution, verdict, or gate result. Never expose raw Review JSON.
 
 For package mode, return the trusted retained Result without changing it and
-report the provider-package location emitted by the fixed entry. Equal
-actor/approver authority retains Review v1's minimal binding Result; distinct
-authority carries the advisory wrapper. The presented inventory states the
-exact ordered Artifacts and recursively reached References Subspace displayed.
-A future scaffold request may bind an arbitrary Briefing locator plus canonical
-id/digest and actor/approver into this same invocation. That composition seam
+report the provider-package location emitted by the fixed entry. The declared
+mode alone decides authority: `feedback` returns Annotations with no decision
+surface, while `advisory` and `binding` return the same Resolution-carrying
+Result differing only in `binding`. No Result names a second identity. The presented
+inventory states the exact ordered Artifacts and recursively reached References
+Subspace displayed. A future scaffold request may bind an arbitrary Briefing
+locator plus canonical id/digest, actor, and mode into this same invocation. That composition seam
 does not authorize this skill to prepare requests, construct associations, call
 the recorder, interpret Routing, or continue a workflow.
 
