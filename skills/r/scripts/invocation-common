@@ -232,14 +232,42 @@ question_require_jq() {
   question_jq=$(command -v jq) || question_fail 'jq is required for the one-question journey' 127
 }
 
-# question_run_root is where run directories live: `.run`, discoverable where the
-# work is and out of version control, rather than a temp directory the system
-# sweeps. A failure's own log is the only thing that makes it diagnosable, and a
-# swept log has already cost this sprint two undiagnosed aborts.
+# question_run_root is where run directories live: the caller's state directory,
+# rather than a temp directory the system sweeps. A failure's own log is the only
+# thing that makes it diagnosable, and a swept log has already cost this sprint
+# two undiagnosed aborts.
+#
+# NOT `$PWD/.run`, the earlier default: it wrote every run — including the
+# review's own `trusted-result.json` — into whatever repository the caller
+# happened to be standing in, and only THIS repository's `.gitignore` covered it.
+#
+# NAMESPACED BY CWD, which is a regression guard and not tidiness.
+# `question_resolve_run` scans ONE root and refuses when two reviews are in play.
+# `$PWD/.run` partitioned runs per working directory for free; a flat global root
+# makes two concurrently-armed reviews refuse each other by naming both documents,
+# so a person reviewing in two repositories at once would be blocked. The checksum
+# is what makes the name unique; the basename is what keeps it readable to a human
+# who goes looking.
 question_run_root() {
-  local root=${SUBSPACE_QUESTION_RUN_ROOT:-$PWD/.run}
-  # ABSOLUTE, always. The default is cwd-relative, and "resolved against the wrong
-  # cwd" has already produced two confident misdiagnoses in this sprint. Every leg
+  local root=${SUBSPACE_QUESTION_RUN_ROOT:-}
+  if [[ -z $root ]]; then
+    # A login shell with neither HOME nor XDG_STATE_HOME is not a machine anyone
+    # reviews on. It falls back to a directory the system may sweep, which is the
+    # one case where a failure's log can vanish — and the leg prints the root it
+    # chose, including on abort, so it is visible when it happens.
+    local state=${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}} cwd sum
+    state=${state:-${TMPDIR:-/tmp}}
+    # THE PHYSICAL CWD, not `$PWD`. Two shells can hold different logical paths
+    # for one directory — `/tmp` and `/private/tmp` on macOS — and `$PWD/.run`
+    # survived that because both spellings named the same directory. A namespace
+    # keyed on the spelling would not: the answer leg would resolve a different
+    # root and report no review in play, with the run sitting where it was left.
+    cwd=$(pwd -P) || cwd=$PWD
+    sum=$(printf '%s' "$cwd" | cksum)
+    root=${state%/}/subspace/runs/${cwd##*/}-${sum%% *}
+  fi
+  # ABSOLUTE, always. A declared root may be cwd-relative, and "resolved against
+  # the wrong cwd" has already produced two confident misdiagnoses. Every leg
   # prints this value, including on abort, so nobody has to guess where a run
   # landed or which cwd it was resolved against.
   case $root in
