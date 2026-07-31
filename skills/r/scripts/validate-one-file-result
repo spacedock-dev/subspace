@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# GNU stat reads -f as --file-system and dumps that to stdout; gating the BSD
+# form on its own result keeps the dump out of the caller's substitution.
+file_mode() {
+  local mode
+  if mode=$(stat -f '%Lp' "$1" 2>/dev/null) && [[ $mode =~ ^[0-7]+$ ]]; then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  stat -c '%a' "$1" 2>/dev/null
+}
+
 if [[ ${1:-} == --review-v1 ]]; then
   [[ $# == 10 ]] || {
     printf 'usage: validate-one-file-result --review-v1 <briefing-file> <sha256-revision> <actor> <mode> <result> <log> <inventory> <child-exit> <capture>\n' >&2
@@ -127,7 +138,7 @@ esac
 [[ $revision =~ ^sha256:[[:xdigit:]]{64}$ ]] || exit 20
 cmp -s -- "$result" "$capture" || exit 20
 
-result_mode=$(stat -f '%Lp' "$result" 2>/dev/null || stat -c '%a' "$result" 2>/dev/null) || exit 20
+result_mode=$(file_mode "$result") || exit 20
 [[ $result_mode == 600 ]] || exit 20
 briefing_hash=$(printf 'subspace:one-file-invocation:v1\0%s' "$result" | shasum -a 256 | awk '{print $1}')
 briefing=briefing:single-file:$(printf '%.32s' "$briefing_hash")
@@ -212,13 +223,13 @@ if [[ $(jq -r '.status' "$capture") == open ]]; then
   package=$(jq -r '.package' "$capture")
   log=$(jq -r '.log' "$capture")
   [[ -d $package && ! -L $package ]] || exit 20
-  package_mode=$(stat -f '%Lp' "$package" 2>/dev/null || stat -c '%a' "$package" 2>/dev/null) || exit 20
+  package_mode=$(file_mode "$package") || exit 20
   [[ $package_mode == 700 ]] || exit 20
   briefing_path=$package/briefing.json
   snapshot_path=$package/artifact.md
   [[ -f $briefing_path && ! -L $briefing_path && -f $snapshot_path && ! -L $snapshot_path ]] || exit 20
-  briefing_mode=$(stat -f '%Lp' "$briefing_path" 2>/dev/null || stat -c '%a' "$briefing_path" 2>/dev/null) || exit 20
-  snapshot_mode=$(stat -f '%Lp' "$snapshot_path" 2>/dev/null || stat -c '%a' "$snapshot_path" 2>/dev/null) || exit 20
+  briefing_mode=$(file_mode "$briefing_path") || exit 20
+  snapshot_mode=$(file_mode "$snapshot_path") || exit 20
   [[ $briefing_mode == 600 && $snapshot_mode == 600 ]] || exit 20
   snapshot_revision=sha256:$(shasum -a 256 "$snapshot_path" | awk '{print $1}')
   [[ $snapshot_revision == "$revision" ]] || exit 20
@@ -231,7 +242,7 @@ if [[ $(jq -r '.status' "$capture") == open ]]; then
   ' "$briefing_path" >/dev/null || exit 20
   if [[ -e $log || -L $log ]]; then
     [[ -s $log && -f $log && ! -L $log ]] || exit 20
-    log_mode=$(stat -f '%Lp' "$log" 2>/dev/null || stat -c '%a' "$log" 2>/dev/null) || exit 20
+    log_mode=$(file_mode "$log") || exit 20
     [[ $log_mode == 600 ]] || exit 20
     jq -s -e --arg briefing "$briefing" '
       def nonempty: type == "string" and length > 0;

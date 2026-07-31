@@ -8,7 +8,8 @@ description: Review one readable Markdown file for feedback or present one canon
 Accept one of these disjoint forms:
 
 ```text
-[--allow-question] [--mode <feedback|advisory|binding>] <file.md> [terminal]
+[--allow-question] [--mode <feedback|advisory|binding>]
+  [--placement <floating|right>] <file.md> [terminal]
 --review-v1 --actor <actor> --mode <feedback|advisory|binding>
   <briefing-file> [terminal]
 ```
@@ -28,7 +29,17 @@ nothing is inferred. Declaring `advisory` or `binding` is how authority is
 asked for, and Subspace never infers it from the source shape or from comparing
 identities. `--allow-question` is a second independent optional modifier on that
 same form — the same review, optionally questionable — and never a form of its
-own; see *Answer one question during a review*.
+own; see *Answer questions during a review*.
+`--placement <floating|right>` is a third optional modifier on that same form,
+declaring where the review surface opens. Placement is presentation-only: it
+grants nothing and leaves the review protocol, the child invocation, and the
+result untouched. An omitted token means `floating`. `right` is a Zellij-only
+declaration: refuse it with every other terminal name, and refuse every
+malformed placement — an unknown value, a duplicate, or a missing value —
+before invoking any entry. Pass the token only to `review-zellij`; every other
+entry refuses it as unknown grammar. Never combine `--placement` with
+`--allow-question` or `--review-v1`: those journeys re-invoke the entry with a
+fixed argv and would silently drop it, so the combination is refused by name.
 Package mode requires only one readable regular Briefing file plus
 a non-empty actor and a declared mode. Its filename, relative or absolute
 spelling, parent permissions, and Unix mode are not Review v1 preconditions.
@@ -106,7 +117,7 @@ exactly one selected fixed entry point in one tool call with separate argv
 entries:
 
 ```text
-review-<selected-terminal> [--allow-question] [--mode <feedback|advisory|binding>] <file.md>
+review-<selected-terminal> [--allow-question] [--mode <feedback|advisory|binding>] [--placement <floating|right>] <file.md>
 review-<selected-terminal> --review-v1 --actor <actor>
   --mode <feedback|advisory|binding> <briefing-file>
 ```
@@ -120,14 +131,17 @@ host or launch.
 An armed review is the single exception. `--allow-question` cannot finish inside
 one blocking call, because the session that has to answer is blocked inside it,
 so that journey is a sequence of invocations of the same selected entry as
-described in *Answer one question during a review*. It authorizes nothing else:
+described in *Answer questions during a review*. It authorizes nothing else:
 still no plan, probe, version check, scratch command, validator, cleanup, retry,
 second host, or second launch.
 
 ### Host-owned placement
 
 - Zellij resolves `ZELLIJ_PANE_ID` through one validated caller-tab inventory
-  and opens one blocking floating pane with the exact `--tab-id`.
+  and opens one blocking floating pane with the exact `--tab-id`. With
+  `--placement right` it substitutes a right split of the caller's tab for the
+  float — the split lands relative to the tab's focused pane — with tab
+  targeting, blocking, and the child invocation unchanged.
 - tmux validates the exact caller pane and attached client, then opens one
   blocking popup targeted at that pane.
 - Herdr creates one right split with `--no-focus` and submits one private child
@@ -172,9 +186,20 @@ profiles, the binary renders the TUI and atomically publishes the result; the
 entries own lifecycle and host placement. Do not add a second result, parser,
 generic adapter, or terminal registry.
 
-## Answer one question during a review
+## subspace-tui unavailable
 
-`--allow-question` lets the reviewer ask this session one question about the
+The selected entry's preflight refuses with exit 127, and pi's
+`subspace_review` throws, when `subspace-tui` does not resolve; both print a
+pointer naming `skills/r/references/subspace-tui-unavailable.md`. That file
+is the deferred journey for this refusal: on seeing the pointer, stop and
+read `skills/r/references/subspace-tui-unavailable.md` before anything else.
+It classifies *why* the binary is unavailable and names the one remedy for
+that reason on this platform. Do not retry the entry, select another
+terminal, or guess at Homebrew before the reason is named.
+
+## Answer questions during a review
+
+`--allow-question` lets the reviewer ask this session questions about the
 document while the review is open, and read the answer in the same surface. Pass
 it when the user asks for a review they may want to interrogate; otherwise leave
 it off.
@@ -183,33 +208,121 @@ Arming changes this skill's completion contract, and the change lands even when
 nobody asks anything. Each invocation returns as soon as it has something to
 report rather than when the review ends, so a finished review is learned by
 invoking the entry again — never by assuming that a quiet return means nothing
-happened. Expect roughly one extra invocation per ninety seconds the reviewer
-spends reading. That cost is why the flag is opt-in and not the default.
+happened.
+
+The arming invocation begins the **poller** chain. Retain its returned `run`
+value as opaque identity. Every later poller is the same selected entry invoked
+with `--poll-question --run <run>`. Pass that same `--run <run>` to every answer
+and decline command so concurrent armed reviews never depend on inference.
+
+**While an armed review has not returned `result` or `aborted`, ensure exactly
+one poller supported by the invoking runtime is running; after either terminal
+state, no poller is required.**
+
+Before launch, select the implementation for the invoking runtime below and
+verify that its wake-capable mechanism is available. Do not improvise a
+different mechanism.
+
+### Codex poller
+
+For each common poller command, start one `functions.exec` task. Inside that
+task, run the command as its foreground helper with `tools.exec_command` and
+`yield_time_ms: 30000`. If it exits inside that yield, return its JSON. If it
+yields a `session_id`, keep the same outer task alive and wait on that helper
+with `tools.write_stdin` until it exits, then return its complete JSON. This
+wait follows the shell session; it does not query Subspace state.
+
+While the task runs, it is the sole poller visible in `/ps`. Before the first
+foreground wait, tell the user: "Waiting for the review. Press Esc to talk. The
+review listener will continue to run." Then install `functions.wait` on the
+outer task. Reinstall that wait silently after chat input while the task remains
+active. Do not narrate listener changes, run identity, successful answer
+delivery, or wait installation. Keep terminal results and failures visible.
+Never let the outer task end at a shell-session yield.
+
+### Claude Code poller
+
+Invoke the selected entry with the Bash tool's `run_in_background: true`.
+Retain the returned background task ID as the running poller. Claude Code's
+proactive completion notification wakes the root session; after that
+notification, read the task's output file once for the complete receiver JSON.
+Do not poll the task output while it runs. If background tasks are disabled or
+the completion notification is unavailable, the armed journey is unsupported
+in that Claude Code session.
+
+
+Any invoking runtime without a section above is unsupported for an armed
+review.
+
+There is no foreground fallback for `--allow-question`. Before invoking the
+selected entry, determine whether the invoking/root session can provide its
+listed wake-capable poller. If it cannot, refuse to arm:
+tell the user this host cannot continue a question-enabled review nonblockingly,
+and invoke no entry, create no run, and launch no review. The remedy is to use a
+supported runtime implementation, then start the arming invocation as its
+poller.
+
+When a receiver returns `question`, immediately start its replacement through
+the selected runtime implementation with `--poll-question --run <run>` —
+**before** reading the Artifact, composing the answer, or forwarding it.
+Copy the returned opaque `questionId` without parsing it.
+Then answer from the pinned Artifact and run a separate, short command:
+`--answer-question --for-question <questionId> --text-file <file> --run <run>`.
+The answer command ends when the review consumes that answer; it never becomes
+the next receiver. Keep exactly one receiver continuously active until it
+returns `result` or `aborted`.
+
+A successful `question` return durably advances an internal delivery cursor, so
+the replacement receiver waits instead of returning that question again while
+its answer is outstanding. If a receiver is killed before successful return,
+the cursor was not advanced and a replacement safely redelivers the question.
+If answer forwarding is killed before publishing a valid answer, invoke the
+same answer command again; interrupted bytes are not a claim. If it is killed
+after the answer file is valid, the reviewer can still consume it and the
+already-running receiver remains live. Do not start a second receiver during
+recovery.
 
 Each invocation returns exactly one JSON object naming a `state`. Act on it:
 
-- `question` — the reviewer asked. Answer it from the pinned Artifact at the
-  reported `artifact` path, write the answer to one private text file, and
-  invoke the entry once with `--answer-question --text-file <file>`.
-- `answered` — the review took the answer and is still open. Invoke again.
-- `waiting` — nothing is decided yet and the review is untouched. Invoke again.
+- `question` — the reviewer asked. Start the replacement receiver first. Then
+  answer from the pinned Artifact at the reported `artifact` path, write the
+  answer to one private text file, and invoke the entry once with the exact
+  returned identity:
+  `--answer-question --for-question <questionId> --text-file <file> --run <run>`.
+- `answered` — the review took the answer. Leave the already-running receiver
+  alone; do not invoke another poll.
+- `waiting` — nothing is decided yet and the review is untouched; only a leg
+  you bounded with an explicit `--machine-budget` reports this. Invoke again.
   This never means the review is idle and never means it is over.
 - `abandoned` — the reviewer left the question before the answer arrived. The
-  review is unaffected. Invoke again.
+  review is unaffected. Leave the already-running receiver alone.
 - `declined` — this session gave up on the question. The review is unaffected.
+  Leave the already-running receiver alone.
+- `expired` — the question lapsed unanswered while an answer was open: the
+  review waited its answer budget and stopped, and no answer for it can still
+  be read. A lapsed question is never handed out again; the reviewer may ask
+  again. Leave the already-running receiver alone.
 - `result` — the review finished. Report it exactly as *Report the returned
   record* requires and stop.
 - `aborted` — the review ended with no result. Report the returned `reason` and
   `hostReason` and stop without another host or launch.
 
-Invoke again with `--poll-question` and nothing else. Answer with
-`--answer-question --text-file <file>` and nothing else. Give up on a question
-with `--decline-question --reason <text>` and nothing else, rather than leaving
-a reviewer watching for an answer that is not coming. The selected entry finds
-the review each of these belongs to on its own; when more than one review is
-open it refuses and names the documents in play rather than guessing. Never
-construct, parse, store, or pass a run directory, and never invoke a bundled
-script other than the selected entry.
+Every replacement receiver uses `--poll-question --run <run>` and nothing else.
+Start it only when the receiver chain begins or immediately after `question`,
+as described above; an `answered`, `abandoned`, `declined`, or `expired`
+response from answer forwarding never starts another receiver. A receiver with
+an explicit `--machine-budget <seconds>` may return `waiting`; immediately
+start its replacement through the same runtime implementation. The normal
+receiver omits that bound and wakes the root session once per event.
+Answer with
+`--answer-question --for-question <questionId> --text-file <file> --run <run>` and nothing
+else. Give up on a question with
+`--decline-question --for-question <questionId> --reason <text> --run <run>` and nothing
+else, rather than leaving a reviewer watching for an answer that is not coming.
+Both identities are opaque: retain the returned `run` and copy the exact
+`questionId` returned with that question; never derive, split, validate, or
+substitute either. Never interpret `run` as a directory, and never invoke a
+bundled script other than the selected entry.
 
 Answer only from the pinned Artifact and what the user's request already
 established. The answer is prose the reviewer reads: it carries no checked

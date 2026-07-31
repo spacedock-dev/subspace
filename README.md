@@ -14,6 +14,20 @@ suggested edits directly back to the invoking agent, attached to exact text.
 brew install spacedock-dev/tap/subspace-beta
 ```
 
+### Linux, or macOS without Homebrew
+
+Install the prebuilt binary directly. The installer resolves the latest
+release through the canonical latest-release URL
+`http://spacedock.md/latest-release/subspace`, verifies the release's
+checksum before anything is placed, and installs `subspace-tui` into
+`~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace-beta/main/install.sh | sh
+```
+
+Add `~/.local/bin` to your `PATH` if it is not already there.
+
 ```sh
 sr path/to/file.md
 ```

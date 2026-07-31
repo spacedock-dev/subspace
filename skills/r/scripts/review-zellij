@@ -7,6 +7,39 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=invocation-common
 source "$script_dir/invocation-common"
 
+# --placement is this entry's grammar alone. The pre-scan runs before
+# invocation_main, so every refusal lands before any host probe or launch.
+invocation_placement=floating
+invocation_placement_fail() {
+  printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
+  exit 2
+}
+invocation_args=()
+seen_placement=0
+seen_armed=
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --placement)
+      [[ $# -ge 2 && $2 != -* ]] || \
+        invocation_placement_fail '--placement requires a value: floating or right'
+      [[ $seen_placement == 0 ]] || invocation_placement_fail 'duplicate --placement'
+      seen_placement=1
+      case $2 in
+        floating|right) invocation_placement=$2 ;;
+        *) invocation_placement_fail "unknown placement: $2" ;;
+      esac
+      shift 2
+      ;;
+    --allow-question|--review-v1) seen_armed=$1; invocation_args+=("$1"); shift ;;
+    *) invocation_args+=("$1"); shift ;;
+  esac
+done
+# Armed journeys re-invoke this entry with fixed argv and would silently drop
+# placement, so the combination is refused by name.
+[[ -z $seen_armed || $seen_placement == 0 ]] || \
+  invocation_placement_fail "--placement cannot be combined with $seen_armed"
+set -- ${invocation_args[@]+"${invocation_args[@]}"}
+
 invocation_host_preflight() {
   zellij_bin=${SUBSPACE_ZELLIJ_BIN:-zellij}
   if [[ $zellij_bin != */* ]]; then
@@ -41,8 +74,14 @@ invocation_host_preflight() {
 
 invocation_host_dispatch() {
   invocation_residue='; operation: run'
+  # Placement is a flag SUBSTITUTION, never an addition (--floating and
+  # --direction are mutually exclusive); the spike falsified --near-current-pane.
+  local placement=(--floating)
+  if [[ $invocation_placement == right ]]; then
+    placement=(--direction right)
+  fi
   "$zellij_bin" --session "$session" run \
-    --tab-id "$tab_id" --floating --close-on-exit --block-until-exit \
+    --tab-id "$tab_id" "${placement[@]}" --close-on-exit --block-until-exit \
     --cwd "$invocation_artifact_dir" -- \
     "${invocation_command[@]}" \
     >/dev/null 2>/dev/null
