@@ -50,7 +50,7 @@ Classify in this order, stopping at the first reason that matches:
      `$SUBSPACE_INSTALL_DIR` (default `~/.local/bin`):
 
      ```sh
-     curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace-beta/main/install.sh | sh
+     curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace/main/install.sh | sh
      ```
 
    - **Any other OS or architecture:** refuse by name. `subspace-tui` ships

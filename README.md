@@ -23,7 +23,7 @@ checksum before anything is placed, and installs `subspace-tui` into
 `~/.local/bin`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace-beta/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace/main/install.sh | sh
 ```
 
 Add `~/.local/bin` to your `PATH` if it is not already there.

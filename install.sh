@@ -3,7 +3,7 @@
 # ABOUTME: release tarball for this host's OS/arch and install the bare binary.
 #
 # Usage (Linux or macOS without Homebrew):
-#   curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace-beta/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace/main/install.sh | sh
 #
 # Behavior:
 #   * Detects OS (darwin|linux) and arch (amd64|arm64) from uname.
@@ -12,7 +12,7 @@
 #       - SUBSPACE_INSTALL_FROM unset (production): the release named by the
 #         canonical latest-release URL
 #         http://spacedock.md/latest-release/subspace (which redirects to the
-#         subspace-beta releases/latest API). No release-asset path or version
+#         subspace releases/latest API). No release-asset path or version
 #         is spelled in this script; both come from that resolution.
 #       - SUBSPACE_INSTALL_FROM=<dir|url-base> (tests / pinned mirror): a local
 #         goreleaser `dist/` directory or a URL prefix holding the same
@@ -30,7 +30,7 @@
 # primary mac path; this script is the Linux and non-Homebrew install path.
 set -eu
 
-REPO="spacedock-dev/subspace-beta"
+REPO="spacedock-dev/subspace"
 LATEST_URL="http://spacedock.md/latest-release/subspace"
 INSTALL_DIR="${SUBSPACE_INSTALL_DIR:-$HOME/.local/bin}"
 
