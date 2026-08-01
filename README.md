@@ -44,6 +44,22 @@ In Codex, invoke:
 $r path/to/file.md
 ```
 
+## Agent integration
+
+Ask your agent to open the review with the Subspace skill. This example uses
+tmux and lets the reviewer ask questions during the review:
+
+```text
+$r --allow-question path/to/file.md tmux
+```
+
+Press <kbd>Q</kbd> to ask about the file. The agent keeps a poller active while
+the review is open. It answers from the same file that you can see in Subspace.
+You can continue the review while the agent prepares the answer.
+
+When you finish, Subspace returns comments and suggested edits to the agent.
+Each item stays attached to the text that you selected.
+
 Press <kbd>?</kbd> from any non-editor review surface to see its current
 keyboard shortcuts.
 
