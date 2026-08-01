@@ -57,19 +57,33 @@ Classify in this order, stopping at the first reason that matches:
      for darwin and linux on amd64 and arm64 only; never fall back silently
      to Homebrew or a source build.
 
-   Print the exact command for the user to run; never run an install on
-   detection alone. When the remedy lands in `~/.local/bin` and that
-   directory is not on the user's `PATH`, print
-   `export PATH="$HOME/.local/bin:$PATH"` with it.
+   For either supported-platform remedy, first decide whether this runtime
+   permits the command's network access and install-directory write. Use
+   known runtime policy or a read-only capability check. Do not infer
+   confinement from a missing binary, a container path, or a generic sandbox
+   statement.
 
-When this session is sandboxed — it cannot reach the network or cannot write
-the install directory — judge that capability yourself before presenting any
-remedy as runnable here; no shipped script probes it for you. Attempt
-nothing: no download, no write. Name the sandbox and hand the user the exact
-steps for their own terminal: the step-3 command, the target
-`~/.local/bin/subspace-tui`, and the export line above when `~/.local/bin` is
-not already on their `PATH`.
+   If the runtime permits the command, show the exact command. Then ask if you
+   can run that command. Wait for an explicit answer. Never run an install on
+   detection alone.
 
-After the remedy lands, re-invoke the same review with the same arguments;
-the classification changes nothing about the selected terminal or the
+   - If the user agrees, run the offered command once. Then re-invoke the same
+     review with the same arguments.
+   - If the user declines, print the command. Then stop. Do not download
+     anything. Do not write anything.
+
+   When the remedy lands in `~/.local/bin` and that directory is not on the
+   user's `PATH`, include it in `PATH` for the retried review. Also print the
+   persistent command:
+
+   ```sh
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+
+If known runtime policy or a read-only check proves a blocked capability,
+attempt nothing. Name the blocked capability. Give the user the step-3
+command for their own terminal, the target `~/.local/bin/subspace-tui`, and
+the export line above when needed.
+
+The classification changes nothing about the selected terminal or the
 declared mode.
