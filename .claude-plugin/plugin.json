@@ -1,6 +1,6 @@
 {
   "name": "subspace",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "description": "Review one Markdown file in Subspace and return its neutral invocation-bound result.",
   "author": {
     "name": "Spacedock"
