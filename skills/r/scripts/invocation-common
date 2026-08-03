@@ -61,6 +61,26 @@ invocation_remove_empty() {
   rmdir -- "$invocation_dir" 2>/dev/null || true
 }
 
+invocation_note_failure() {
+  local reason=$1 status=${2:-1}
+  if [[ -z ${invocation_failure_reason:-} ]]; then
+    invocation_failure_reason=$reason
+    invocation_failure_status=$status
+  else
+    invocation_failure_reason="${invocation_failure_reason}; $reason"
+  fi
+}
+
+invocation_note_host_failure() {
+  local reason=$1 status=${2:-1}
+  if [[ -z ${invocation_host_failure_reason:-} ]]; then
+    invocation_host_failure_reason=$reason
+    invocation_host_failure_status=$status
+  else
+    invocation_host_failure_reason="${invocation_host_failure_reason}; $reason"
+  fi
+}
+
 invocation_preflight_fail() {
   invocation_remove_empty
   if [[ ${invocation_profile:-one-file} == explicit-briefing &&
@@ -74,6 +94,10 @@ invocation_preflight_fail() {
 }
 
 invocation_preserve_fail() {
+  if [[ ${invocation_defer_failures:-0} == 1 ]]; then
+    invocation_note_failure "$1" "${2:-1}"
+    return 0
+  fi
   printf 'review-%s: %s; recoverable scratch: %s%s\n' \
     "$invocation_name" "$1" "$invocation_dir" "${invocation_residue:-}" >&2
   exit "${2:-1}"
@@ -162,25 +186,40 @@ invocation_prepare_provider() {
 
 invocation_receive_async() {
   local child_status
-  IFS= read -r child_status < "$invocation_fifo" || \
+  if ! IFS= read -r child_status < "$invocation_fifo"; then
     invocation_preserve_fail 'completion FIFO closed without a status'
-  [[ $child_status =~ ^[0-9]+$ && $child_status -le 255 ]] || \
+    return 0
+  fi
+  if ! [[ $child_status =~ ^[0-9]+$ && $child_status -le 255 ]]; then
     invocation_preserve_fail 'completion status is malformed'
-  [[ $child_status == 0 ]] || \
+    return 0
+  fi
+  if [[ $child_status != 0 ]]; then
     invocation_preserve_fail "Subspace exited with status $child_status" "$child_status"
+    return 0
+  fi
 }
 
 invocation_receive_provider_sync() {
   local child_record child_status
-  [[ -f $invocation_child_exit && ! -L $invocation_child_exit ]] || \
+  if ! [[ -f $invocation_child_exit && ! -L $invocation_child_exit ]]; then
     invocation_preserve_fail 'terminal returned without child-exit evidence'
+    return 0
+  fi
   child_record=$(<"$invocation_child_exit")
-  [[ $child_record =~ ^\{\"exit\":([0-9]+),\"argvSha256\":\"sha256:[0-9a-f]{64}\"\}$ ]] || \
+  if ! [[ $child_record =~ ^\{\"exit\":([0-9]+),\"argvSha256\":\"sha256:[0-9a-f]{64}\"\}$ ]]; then
     invocation_preserve_fail 'completion status is malformed'
+    return 0
+  fi
   child_status=${BASH_REMATCH[1]}
-  (( child_status <= 255 )) || invocation_preserve_fail 'completion status is malformed'
-  [[ $child_status == 0 ]] || \
+  if ! (( child_status <= 255 )); then
+    invocation_preserve_fail 'completion status is malformed'
+    return 0
+  fi
+  if [[ $child_status != 0 ]]; then
     invocation_preserve_fail "Subspace exited with status $child_status" "$child_status"
+    return 0
+  fi
 }
 
 invocation_wait_for_result() {
@@ -192,6 +231,7 @@ invocation_wait_for_result() {
     sleep 0.02
   done
   invocation_preserve_fail 'terminal returned before publishing a result'
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1131,9 +1171,15 @@ invocation_main() {
     --decline-question) shift; question_leg_decline "$@"; return 0 ;;
   esac
   local supplied found capability_status revision_status dispatch_status scratch
+  local host_status result_present
   invocation_created=0
   invocation_dispatched=0
   invocation_residue=
+  invocation_failure_reason=
+  invocation_failure_status=1
+  invocation_defer_failures=0
+  invocation_host_failure_reason=
+  invocation_host_failure_status=0
   invocation_profile=one-file
   invocation_question_run=
   if [[ ${1:-} == --review-v1 ]]; then
@@ -1261,70 +1307,105 @@ invocation_main() {
   trap invocation_interrupted HUP INT TERM
 
   invocation_dispatched=1
+  invocation_defer_failures=1
   set +e
   invocation_host_dispatch
   dispatch_status=$?
   set -e
-  [[ $dispatch_status == 0 ]] || \
+  if [[ $dispatch_status != 0 ]]; then
     invocation_preserve_fail "selected host launch failed with status $dispatch_status" "$dispatch_status"
-  if [[ ${invocation_async:-0} == 1 ]]; then
+  elif [[ ${invocation_async:-0} == 1 ]]; then
     invocation_receive_async
   elif [[ $invocation_profile == explicit-briefing ]]; then
     invocation_receive_provider_sync
   elif [[ $invocation_profile == one-file ]]; then
     invocation_wait_for_result
   fi
-  if declare -F invocation_host_complete >/dev/null; then
-    invocation_host_complete
-  fi
-  if [[ $invocation_profile == one-file ]]; then
-    [[ -f $invocation_result && ! -L $invocation_result ]] || \
-      invocation_preserve_fail 'terminal returned no regular result'
-    [[ $(invocation_path_mode "$invocation_result" || true) == 600 ]] || \
-      invocation_preserve_fail 'terminal result is not mode 0600'
-    cat -- "$invocation_result" > "$invocation_capture" || \
-      invocation_preserve_fail 'could not capture the terminal result'
-  elif [[ -e $invocation_result || -L $invocation_result ]]; then
-    [[ -f $invocation_result && ! -L $invocation_result ]] || \
-      invocation_preserve_fail 'terminal returned a non-regular result'
-    cat -- "$invocation_result" > "$invocation_capture" || \
-      invocation_preserve_fail 'could not capture the terminal result'
-  else
-    : > "$invocation_capture" || invocation_preserve_fail 'could not create missing-result capture'
-  fi
 
-  set +e
-  if [[ $invocation_profile == one-file ]]; then
-    "$script_dir/validate-one-file-result" "$invocation_artifact" "$invocation_revision" \
-      "$invocation_mode" "$invocation_result" "$invocation_capture" > "$invocation_trusted"
-  else
-    "$script_dir/validate-one-file-result" --review-v1 "$invocation_artifact" "$invocation_revision" \
-      "$invocation_actor" "$invocation_mode" "$invocation_result" "$invocation_log" \
-      "$invocation_inventory" "$invocation_child_exit" "$invocation_capture" > "$invocation_trusted"
-  fi
-  revision_status=$?
-  set -e
-  if [[ $revision_status != 0 ]]; then
-    if [[ $invocation_profile == explicit-briefing ]]; then
-      invocation_preserve_fail 'canonical result validation failed' 1
+  if [[ -z $invocation_failure_reason ]]; then
+    result_present=0
+    if [[ $invocation_profile == one-file ]]; then
+      if ! [[ -f $invocation_result && ! -L $invocation_result ]]; then
+        invocation_preserve_fail 'terminal returned no regular result'
+      elif [[ $(invocation_path_mode "$invocation_result" || true) != 600 ]]; then
+        invocation_preserve_fail 'terminal result is not mode 0600'
+      elif cat -- "$invocation_result" > "$invocation_capture"; then
+        result_present=1
+      else
+        invocation_preserve_fail 'could not capture the terminal result'
+      fi
+    elif [[ -e $invocation_result || -L $invocation_result ]]; then
+      if ! [[ -f $invocation_result && ! -L $invocation_result ]]; then
+        invocation_preserve_fail 'terminal returned a non-regular result'
+      elif cat -- "$invocation_result" > "$invocation_capture"; then
+        result_present=1
+      else
+        invocation_preserve_fail 'could not capture the terminal result'
+      fi
+    else
+      : > "$invocation_capture" || invocation_preserve_fail 'could not create missing-result capture'
     fi
-    invocation_preserve_fail 'canonical result validation failed' "$revision_status"
+
+    if [[ -z $invocation_failure_reason &&
+      ( $result_present == 1 || $invocation_profile == explicit-briefing ) ]]; then
+      set +e
+      if [[ $invocation_profile == one-file ]]; then
+        "$script_dir/validate-one-file-result" "$invocation_artifact" "$invocation_revision" \
+          "$invocation_mode" "$invocation_result" "$invocation_capture" > "$invocation_trusted"
+      else
+        "$script_dir/validate-one-file-result" --review-v1 "$invocation_artifact" "$invocation_revision" \
+          "$invocation_actor" "$invocation_mode" "$invocation_result" "$invocation_log" \
+          "$invocation_inventory" "$invocation_child_exit" "$invocation_capture" > "$invocation_trusted"
+      fi
+      revision_status=$?
+      set -e
+      if [[ $revision_status != 0 ]]; then
+        if [[ $invocation_profile == explicit-briefing ]]; then
+          invocation_preserve_fail 'canonical result validation failed' 1
+        else
+          invocation_preserve_fail 'canonical result validation failed' "$revision_status"
+        fi
+      fi
+    fi
+
+    if [[ -z $invocation_failure_reason ]]; then
+      set +e
+      cat -- "$invocation_trusted"
+      dispatch_status=$?
+      set -e
+      if [[ $dispatch_status != 0 ]]; then
+        invocation_preserve_fail 'trusted result delivery failed' "$dispatch_status"
+      fi
+    fi
   fi
 
-  set +e
-  cat -- "$invocation_trusted"
-  dispatch_status=$?
-  set -e
-  [[ $dispatch_status == 0 ]] || invocation_preserve_fail 'trusted result delivery failed' "$dispatch_status"
-  if [[ $invocation_profile == one-file ]]; then
-    rm -f -- "$invocation_result" "$invocation_capture" "$invocation_trusted" \
-      "$invocation_fifo" "$invocation_capsule" || \
-      invocation_preserve_fail 'successful delivery could not clean invocation files'
-    rmdir -- "$invocation_dir" || invocation_preserve_fail 'successful delivery could not clean invocation directory'
-  else
-    rm -f -- "$invocation_capture" "$invocation_trusted" "$invocation_fifo" "$invocation_capsule" || \
-      invocation_preserve_fail 'successful provider transient cleanup failed'
-    printf 'review-%s: retained provider package: %s\n' "$invocation_name" "$invocation_dir" >&2
+  if declare -F invocation_host_complete >/dev/null; then
+    set +e
+    invocation_host_complete
+    host_status=$?
+    set -e
+    if [[ $host_status != 0 ]]; then
+      invocation_note_failure "${invocation_host_failure_reason:-host cleanup failed}" \
+        "${invocation_host_failure_status:-$host_status}"
+    fi
+  fi
+
+  if [[ -z $invocation_failure_reason ]]; then
+    if [[ $invocation_profile == one-file ]]; then
+      rm -f -- "$invocation_result" "$invocation_capture" "$invocation_trusted" \
+        "$invocation_fifo" "$invocation_capsule" || \
+        invocation_preserve_fail 'successful delivery could not clean invocation files'
+      rmdir -- "$invocation_dir" || invocation_preserve_fail 'successful delivery could not clean invocation directory'
+    else
+      rm -f -- "$invocation_capture" "$invocation_trusted" "$invocation_fifo" "$invocation_capsule" || \
+        invocation_preserve_fail 'successful provider transient cleanup failed'
+      printf 'review-%s: retained provider package: %s\n' "$invocation_name" "$invocation_dir" >&2
+    fi
+  fi
+
+  invocation_defer_failures=0
+  if [[ -n $invocation_failure_reason ]]; then
+    invocation_preserve_fail "$invocation_failure_reason" "$invocation_failure_status"
   fi
   trap - HUP INT TERM
 }

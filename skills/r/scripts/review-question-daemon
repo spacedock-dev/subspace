@@ -235,7 +235,7 @@ daemon_conclude() {
   # A PUBLISHED REVIEW RESULT WINS OVER EVERY LIFECYCLE VERDICT, always and
   # first. Once the reviewer's work has been validated and written down, nothing
   # this daemon believes about processes may discard it.
-  if daemon_has_result && [[ -z $status || $status == 0 ]]; then
+  if daemon_has_result; then
     exit 0
   fi
 

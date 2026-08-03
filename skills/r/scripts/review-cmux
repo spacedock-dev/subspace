@@ -42,17 +42,58 @@ invocation_host_dispatch() {
 }
 
 invocation_host_complete() {
-  local status
-  "$cmux_bin" close-surface --surface "$surface" >/dev/null 2>/dev/null || {
+  local status inventory_status inventory inventory_state
+  if [[ -z ${surface:-} || $surface == "$caller_surface" ]]; then
+    invocation_residue='; operation: close-surface; wrong or missing owned surface identity'
+    invocation_note_host_failure 'refusing to close a non-owned CMUX surface' 1
+  elif "$cmux_bin" close-surface --surface "$surface" >/dev/null 2>/dev/null; then
+    :
+  else
     status=$?
     invocation_residue="; operation: close-surface; possible surface: $surface"
-    invocation_preserve_fail "owned surface cleanup failed with status $status" "$status"
-  }
-  "$cmux_bin" focus-panel --workspace "$workspace" --panel "$caller_surface" >/dev/null 2>/dev/null || {
+    if inventory=$("$cmux_bin" list-pane-surfaces --workspace "$workspace" --pane "$caller_pane" \
+      --json --id-format both 2>/dev/null); then
+      if inventory_state=$("$jq_bin" -er --arg owned "$surface" '
+        if type != "array" then "invalid"
+        elif any(.. | strings; . == $owned) then "present"
+        else "absent"
+        end
+      ' <<< "$inventory" 2>/dev/null); then
+        case $inventory_state in
+          absent) ;;
+          present)
+            invocation_note_host_failure \
+              "owned surface cleanup failed with status $status; exact surface is still present: $surface" "$status"
+            ;;
+          *)
+            invocation_residue+="; operation: list-pane-surfaces; possible surface: $surface"
+            invocation_note_host_failure \
+              "owned surface cleanup status $status could not be verified: inventory was invalid" "$status"
+            ;;
+        esac
+      else
+        invocation_residue+="; operation: list-pane-surfaces; possible surface: $surface"
+        invocation_note_host_failure \
+          "owned surface cleanup status $status could not be verified: inventory was unreadable" "$status"
+      fi
+    else
+      inventory_status=$?
+      invocation_residue+="; operation: list-pane-surfaces; possible surface: $surface"
+      invocation_note_host_failure \
+        "owned surface cleanup status $status could not be verified: inventory failed with status $inventory_status" \
+        "$status"
+    fi
+  fi
+  if "$cmux_bin" focus-panel --workspace "$workspace" --panel "$caller_surface" >/dev/null 2>/dev/null; then
+    :
+  else
     status=$?
-    invocation_residue="; operation: focus-panel; possible surface: $surface"
-    invocation_preserve_fail "caller surface restoration failed with status $status" "$status"
-  }
+    invocation_residue+="; operation: focus-panel; possible surface: ${surface:-unknown}"
+    invocation_note_host_failure "caller surface restoration failed with status $status" "$status"
+  fi
+  if [[ -n ${invocation_host_failure_reason:-} ]]; then
+    return "${invocation_host_failure_status:-1}"
+  fi
 }
 
 invocation_main "$@"
