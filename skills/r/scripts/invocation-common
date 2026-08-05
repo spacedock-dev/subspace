@@ -13,7 +13,6 @@ invocation_usage() {
   printf '   or: review-%s --review-v1 --actor ID --mode MODE <briefing-file>\n' "$invocation_name" >&2
   exit 2
 }
-
 invocation_path_mode() {
   local mode
   if mode=$(stat -f '%Lp' "$1" 2>/dev/null); then
@@ -235,920 +234,71 @@ invocation_wait_for_result() {
 }
 
 # ---------------------------------------------------------------------------
-# The one-question journey.
+# The question journey.
 #
-# TWO LEGS ARE FORCED, not chosen. The agent session that opens a review cannot
-# compute an answer while it is blocked inside the invocation that opened it, so
-# the arming invocation has to EXIT carrying the question and a later invocation
-# has to bring the answer back. That exit is also why the daemon exists: between
-# the first invocation ending and the second beginning, no process of ours is
-# running, and a reviewer whose agent session never returns would otherwise wait
-# forever with nobody able to tell them.
-#
-# EVERY LEG IS A FLAG ON THIS ENTRY, not a script of its own. The capability
-# belongs to the per-host entry the caller already uses, so all six backends get
-# it from one implementation and host placement stays where it already lives.
-#
-# The legs below reach a run directory and nothing else, so they run before any
-# host preflight and need no host at all.
-#
-# The run directory is the entire correlation mechanism: one directory per run,
-# minted by the arming invocation, never reused and NEVER DELETED ON FAILURE.
-# That is why there is no lock here, no generation nonce, no freshness check and
-# no owner identity to match — a leftover from an earlier run cannot arrive in a
-# directory that did not exist when it ran.
+# The private Go command owns run identity, FIFO selection, claims, expiry,
+# and lifecycle observations. This sourced file only validates the public
+# dispatch shape, finds the exact binary, launches the daemon, and forwards
+# the resulting packet.
 # ---------------------------------------------------------------------------
 
-question_root=
-# NO DEFAULT MACHINE BUDGET. A wait leg blocks until something is decided — a
-# question, the review's result, a terminal, or a daemon gone past grace — so a
-# session hosting the leg in the background is woken once per event with
-# something to act on, instead of once per ninety seconds with nothing.
-# --machine-budget stays as an explicit override for callers that need a
-# bounded leg; only an explicit budget ever produces `waiting` or `answered`.
-question_machine_budget=
-question_grace=3
-
-# question_human_budget is the SAME fifteen minutes as questionHumanBudget in
-# cmd/subspace-tui (v1_tui_question.go): the review waits this long for an
-# answer, from the moment it asks, and then stops — persisting nothing. A
-# question older than this is therefore DECIDED, named `expired`, and no leg
-# may re-hand it or wait on its consumption. The captain, 2026-07-29: "Just
-# say question expired. We can add retry later. The user can already ask the
-# question again."
-question_human_budget=900
-
-# question_retire_expired writes a lapsed question's retirement marker. The
-# ANSWER leg — already a writer in this design, of claims and of decline
-# records — is the side that NAMES the lapse, so it is the side that retires
-# it; the wait legs stay read-only. Without the marker a lapsed question is
-# "outstanding" to resolution forever, and every later armed review in the
-# directory is refused as ambiguous on a dead run's behalf. Content-free:
-# existence is the whole signal, so a partial write still retires, and a
-# failed write is rewritten by the next answer leg to report the lapse.
-question_retire_expired() {
-  "$question_jq" -n '{"type": "subspace-question-expired"}' \
-    > "$question_run/question-$1.expired" 2>/dev/null || true
-}
-
-# question_expired_p reports whether question N of a run is past the human
-# budget, aged from the question record's mtime — the record is written once,
-# when the review asks, and the run directory is never swept, so the mtime IS
-# the asking time the TUI's own deadline counts from.
-question_expired_p() {
-  local record=$1/question-$2.json modified
-  [[ -f $record ]] || return 1
-  # BSD stat and GNU stat disagree on the flag AND on what the wrong flag
-  # does: GNU -f means FILESYSTEM status, where %m is the MOUNT POINT — a
-  # successful non-answer that the usual `||` fallback never catches. Only a
-  # whole-number epoch is accepted from either.
-  modified=$(stat -f '%m' "$record" 2>/dev/null)
-  [[ $modified =~ ^[0-9]+$ ]] || modified=$(stat -c '%Y' "$record" 2>/dev/null)
-  [[ $modified =~ ^[0-9]+$ ]] || return 1
-  (( $(date +%s) - modified > question_human_budget ))
-}
+question_transport_bin=
 
 question_fail() {
   printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
   exit "${2:-2}"
 }
 
-question_require_jq() {
-  question_jq=$(command -v jq) || question_fail 'jq is required for the one-question journey' 127
+question_transport_require() {
+  local found
+  found=$(command -v subspace-tui 2>/dev/null) ||     question_fail 'subspace-tui is unavailable; read skills/r/references/subspace-tui-unavailable.md' 127
+  [[ $found == /* ]] || question_fail 'subspace-tui did not resolve to an absolute path'
+  question_transport_bin=$(invocation_canonical_file "$found") ||     question_fail 'could not resolve the exact subspace-tui target'
+  [[ -f $question_transport_bin && ! -L $question_transport_bin && -x $question_transport_bin ]] ||     question_fail 'subspace-tui target is not an executable regular file'
+  "$question_transport_bin" --supports review-question-transport-v1 >/dev/null 2>&1 ||     question_fail 'subspace-tui does not support review-question-transport-v1; upgrade spacedock-dev/tap/subspace-beta' 127
 }
 
-# question_run_root is where run directories live: the caller's state directory,
-# rather than a temp directory the system sweeps. A failure's own log is the only
-# thing that makes it diagnosable, and a swept log has already cost this sprint
-# two undiagnosed aborts.
-#
-# NOT `$PWD/.run`, the earlier default: it wrote every run — including the
-# review's own `trusted-result.json` — into whatever repository the caller
-# happened to be standing in, and only THIS repository's `.gitignore` covered it.
-#
-# NAMESPACED BY CWD, which is a regression guard and not tidiness.
-# `question_resolve_run` scans ONE root and refuses when two reviews are in play.
-# `$PWD/.run` partitioned runs per working directory for free; a flat global root
-# makes two concurrently-armed reviews refuse each other by naming both documents,
-# so a person reviewing in two repositories at once would be blocked. The checksum
-# is what makes the name unique; the basename is what keeps it readable to a human
-# who goes looking.
-question_run_namespace() {
-  local cwd sum
-  cwd=$(pwd -P) || cwd=$PWD
-  sum=$(printf '%s' "$cwd" | cksum)
-  printf '%s-%s\n' "${cwd##*/}" "${sum%% *}"
-}
-
-question_inferred_run_root() {
-  local state=${XDG_STATE_HOME:-${HOME:+$HOME/.local/state}}
-  state=${state:-${TMPDIR:-/tmp}}
-  printf '%s/subspace/runs/%s\n' "${state%/}" "$(question_run_namespace)"
-}
-
-question_safe_run_root() {
-  local temp=${TMPDIR:-/tmp} uid
-  case $temp in
-    /*) ;;
-    *) temp=$PWD/$temp ;;
-  esac
-  temp=$(CDPATH= cd -- "$temp" 2>/dev/null && pwd -P) || return 1
-  uid=$(id -u) || return 1
-  printf '%s/subspace-question-%s/runs/%s\n' \
-    "${temp%/}" "$uid" "$(question_run_namespace)"
-}
-
-question_prepare_safe_root() {
-  local root=$1 private owner uid
-  private=${root%/runs/*}
-  uid=$(id -u) || return 1
-  umask 077
-  mkdir -p "$root" 2>/dev/null || return 1
-  [[ -d $private && ! -L $private ]] || return 1
-  owner=$(stat -f '%u' "$private" 2>/dev/null)
-  [[ $owner =~ ^[0-9]+$ ]] || owner=$(stat -c '%u' "$private" 2>/dev/null)
-  [[ $owner == "$uid" ]] || return 1
-  chmod 700 "$private" "$root" || return 1
-  printf '%s\n' 'subspace-question-safe-root-v1' > "$root/.safe-root" || return 1
-}
-
-question_run_root() {
-  local root=${SUBSPACE_QUESTION_RUN_ROOT:-} alternate private owner uid
-  if [[ -z $root ]]; then
-    root=$(question_inferred_run_root)
-    alternate=$(question_safe_run_root 2>/dev/null) || alternate=
-    private=${alternate%/runs/*}
-    uid=$(id -u 2>/dev/null) || uid=
-    owner=$(stat -f '%u' "$private" 2>/dev/null)
-    [[ $owner =~ ^[0-9]+$ ]] || owner=$(stat -c '%u' "$private" 2>/dev/null)
-    if [[ -n $alternate && -f $alternate/.safe-root &&
-      -d $private && ! -L $private && -n $uid && $owner == "$uid" ]]; then
-      root=$alternate
-    fi
-  fi
-  # ABSOLUTE, always. A declared root may be cwd-relative, and "resolved against
-  # the wrong cwd" has already produced two confident misdiagnoses. Every leg
-  # prints this value, including on abort, so nobody has to guess where a run
-  # landed or which cwd it was resolved against.
-  case $root in
-    /*) ;;
-    *) root=$PWD/$root ;;
-  esac
-  printf '%s\n' "$root"
-}
-
-# question_set_root records the absolute root of the run this leg is working on.
-question_set_root() {
-  question_root=${question_run%/*}
-  [[ -n $question_root ]] || question_root=/
-}
-
-# question_is_a_claim reports whether a file is an answer somebody could read.
-#
-# A CLAIM THAT DOES NOT PARSE IS NOT A CLAIM. Size was the wrong test: a file
-# interrupted mid-write is non-empty and describes no answer, and treating it as a
-# peer's claim stranded the question for the reviewer's whole budget.
-#
-# This is the same tolerant-reader principle used by `questionRun.poll` and
-# `daemon_launcher_status` — the reader looks again rather than the writer
-# performing a publication ritual. It is deliberately NOT temp-then-rename, which
-# the captain cut; a reviewer restating that design as an exclusive hard-link does
-# not reinstate it.
-question_is_a_claim() {
-  [[ -s $1 ]] || return 1
-  "$question_jq" -e '(.answer // "") | (type == "string" and (. | length) > 0)' \
-    "$1" >/dev/null 2>&1
-}
-
-question_load_run() {
-  [[ -n ${question_run:-} ]] || invocation_usage
-  [[ -d $question_run ]] || question_fail "no such run directory: $question_run"
-  [[ -f $question_run/config.json ]] || question_fail "not a question run directory: $question_run"
-  question_run=$(CDPATH= cd -- "$question_run" && pwd -P) || \
-    question_fail 'could not resolve the run directory'
-  question_set_root
-}
-
-# question_process_alive answers "does this process exist", not "may I signal it".
-#
-# Same defect and same fix as the daemon's own check: `kill -0` fails with ESRCH
-# when the process is gone and with EPERM when it exists but is not ours to
-# signal, and treating the second as death declared a live daemon dead. Only ESRCH
-# is evidence of death; anything else means we cannot conclude, and a verdict may
-# be delayed but never wrong.
-question_process_alive() {
-  local err
-  err=$(LC_ALL=C kill -0 "$1" 2>&1) && return 0
-  case $err in
-    *'No such process'*) return 1 ;;
-    *) return 0 ;;
-  esac
-}
-
-question_daemon_pid() {
-  local raw
-  [[ -f $question_run/daemon.pid ]] || return 0
-  raw=$(<"$question_run/daemon.pid")
-  raw=${raw//[^0-9]/}
-  [[ -n $raw ]] || return 0
-  printf '%s\n' "$raw"
-}
-
-# question_latest_index prints the highest question index a run has on disk, or
-# nothing when it has never asked.
-#
-# The review asks 1, 2, 3 … and a send that failed rewrites its own index, so the
-# highest name present is the newest question — asked or already finished.
-question_latest_index() {
-  local run=$1 file n highest=0
-  for file in "$run"/question-*.json; do
-    [[ -f $file ]] || continue
-    n=${file##*/question-}
-    n=${n%.json}
-    # Indices count from 1 and are never zero-padded, so a padded or zero name is
-    # not one of ours and is ignored rather than half-understood. It also keeps
-    # `question-08.json` out of the arithmetic below, where bash would read it as
-    # an octal literal and raise an error onto the stderr the caller reads.
-    [[ $n =~ ^[1-9][0-9]*$ ]] || continue
-    if (( n > highest )); then
-      highest=$n
-    fi
-  done
-  (( highest > 0 )) || return 0
-  printf '%s\n' "$highest"
-}
-
-# question_open_p answers whether question N can still receive an answer or
-# decline. Delivery does not close it: the receiver cursor and the answer claim
-# are separate facts, and several delivered questions may be awaiting answers.
-question_open_p() {
-  local run=$1 n=$2
-  [[ -f $run/question-$n.json ]] || return 1
-  [[ ! -f $run/answer-$n.json &&
-    ! -f $run/question-$n.abandoned &&
-    ! -f $run/decline-$n.json &&
-    ! -f $run/question-$n.expired ]]
-}
-
-# question_outstanding_index remains a diagnostic helper for older tests and
-# comments. With more than one open question it prints the oldest; answer and
-# decline commands never use it, because their required packet identity names
-# the exact run and index.
-question_outstanding_index() {
-  local run=$1 file n oldest=
-  for file in "$run"/question-*.json; do
-    [[ -f $file ]] || continue
-    n=${file##*/question-}
-    n=${n%.json}
-    [[ $n =~ ^[1-9][0-9]*$ ]] || continue
-    question_open_p "$run" "$n" || continue
-    if [[ -z $oldest ]] || (( n < oldest )); then
-      oldest=$n
-    fi
-  done
-  if [[ -n $oldest ]]; then
-    printf '%s\n' "$oldest"
-  fi
-}
-
-# question_receivable_index is the FIFO delivery cursor: the oldest open
-# question not yet returned successfully. A successful report writes
-# question-N.delivered after stdout, so the continuously active replacement
-# receiver advances without waiting for N's answer and never redelivers N.
-question_receivable_index() {
-  local run=$1 file n oldest=
-  for file in "$run"/question-*.json; do
-    [[ -f $file ]] || continue
-    n=${file##*/question-}
-    n=${n%.json}
-    [[ $n =~ ^[1-9][0-9]*$ ]] || continue
-    question_open_p "$run" "$n" || continue
-    [[ ! -f $run/question-$n.delivered ]] || continue
-    question_expired_p "$run" "$n" && continue
-    if [[ -z $oldest ]] || (( n < oldest )); then
-      oldest=$n
-    fi
-  done
-  if [[ -n $oldest ]]; then
-    printf '%s\n' "$oldest"
-  fi
-}
-
-question_id() {
-  printf '%s#%s\n' "${1##*/}" "$2"
-}
-
-# question_poll_once sets question_state, or leaves it empty when nothing is
-# decided yet. Order is deliberate and each step is load-bearing.
-question_poll_once() {
-  question_state=
-
-  # A published review result wins over everything. Once the reviewer's work has
-  # been validated and written down, no lifecycle verdict may discard it.
-  if [[ -s $question_run/trusted-result.json ]] && [[ -f $question_run/launcher-exit ]]; then
-    question_state=result
-    return 0
-  fi
-
-  # The daemon's verdict. It already names which disjunct fired, so this leg
-  # carries the daemon's words rather than inventing its own.
-  if [[ -s $question_run/terminal.json ]]; then
-    question_state=terminal
-    return 0
-  fi
-
-  # The question, but only while it is still outstanding. Once an answer has been
-  # written the question phase is over and this leg waits for the review itself —
-  # until the reviewer asks again, which arrives here as a higher index.
-  #
-  # question_receivable is the index question_report renders, and this is its one
-  # writer: the report must describe the question this poll actually observed, not
-  # a re-scan that could have moved underneath it.
-  question_receivable=$(question_receivable_index "$question_run")
-  # A question PAST THE HUMAN BUDGET is decided, not askable: the review
-  # already stopped waiting for its answer. It is never handed out again —
-  # the reviewer may simply ask again — so this leg waits for the review's
-  # next event, exactly as after a decline. The NAME `expired` is said where
-  # a waiter exists to hear it: the answer leg. Saying it here would say it
-  # instantly on every later leg, a busy-wake loop, because expiry is a pure
-  # function of the record's mtime.
-  if [[ -n $question_receivable ]] && ! question_expired_p "$question_run" "$question_receivable"; then
-    question_state=question
-    return 0
-  fi
-
-  # Liveness is a HINT, in one direction only. A daemon that still answers means
-  # keep waiting. A daemon that does not answer decides nothing on its own: it
-  # opens a grace window in which the terminal it should have published is still
-  # expected, because it may be mid-write. A dead-looking process may only DELAY
-  # a verdict, never produce one.
-  local daemon_pid
-  daemon_pid=$(question_daemon_pid)
-  if [[ -n $daemon_pid ]] && ! question_process_alive "$daemon_pid"; then
-    if [[ -z ${question_daemon_gone_at:-} ]]; then
-      question_daemon_gone_at=$SECONDS
-    elif (( SECONDS - question_daemon_gone_at >= question_grace )); then
-      question_state=daemon-gone
-      return 0
-    fi
-  else
-    question_daemon_gone_at=
-  fi
-  return 0
-}
-
-# question_wait polls until something is decided — or, when the caller passed
-# an explicit --machine-budget, until that budget ends this LEG first.
-#
-# A machine budget ends this LEG and never the review. A reviewer who is still
-# reading is not a timeout, and a two-minute machine budget applied to a human
-# once destroyed a slow reviewer's annotations. On expiry the run handle comes
-# back and a later --poll-question resumes it.
-question_wait() {
-  local started=$SECONDS
-  while :; do
-    question_poll_once
-    [[ -z $question_state ]] || return 0
-    if [[ -n $question_machine_budget ]] && (( SECONDS - started >= question_machine_budget )); then
-      question_state=waiting
-      return 0
-    fi
-    sleep 0.2
-  done
-}
-
-# question_report writes exactly one JSON object to stdout. The agent session
-# parses this, so jq builds it: a question or an answer carrying quotes, newlines
-# or backslashes cannot corrupt the object it travels in.
-question_report() {
-  case $question_state in
-    question)
-      "$question_jq" -n --arg state question --arg run "$question_run" --arg root "$question_root" \
-        --arg question_id "$(question_id "$question_run" "$question_receivable")" \
-        --slurpfile q "$question_run/question-${question_receivable}.json" \
-        '{state: $state, run: $run, runRoot: $root, questionId: $question_id, question: $q[0].question,
-          artifact: $q[0].artifact, rev: $q[0].rev, mode: $q[0].mode}' ||
-        question_fail 'could not report the question; it remains receivable'
-      # Delivery is committed only after the complete JSON reached stdout. If
-      # this receiver is killed before then, no cursor exists and a replacement
-      # safely retries. A successful leg records the cursor before it exits, so
-      # the root session can start the next receiver immediately without a
-      # healthy-path duplicate. The marker does not retire the question:
-      # answer/decline resolution still sees it as outstanding.
-      : > "$question_run/question-${question_receivable}.delivered" ||
-        question_fail 'could not record question delivery; a replacement may redeliver it'
-      ;;
-    result)
-      "$question_jq" -n --arg state result --arg run "$question_run" --arg root "$question_root" \
-        --slurpfile r "$question_run/trusted-result.json" \
-        '{state: $state, run: $run, runRoot: $root, result: $r[0]}'
-      # COLLECTION IS WHAT MAKES HANDLE-FREE RESOLUTION TERMINATE. The run
-      # directory is never deleted, so without a record that this result has
-      # been delivered the spent run stays reachable forever and captures the
-      # next review's leg. Marked only after the result was actually written to
-      # stdout, so a delivery that failed leaves the result still collectable.
-      : > "$question_run/result.collected" 2>/dev/null || true
-      ;;
-    terminal)
-      # The daemon named its disjunct; this passes it through unchanged rather
-      # than flattening it to a bare "aborted".
-      "$question_jq" -n --arg run "$question_run" --arg root "$question_root" \
-        --slurpfile t "$question_run/terminal.json" \
-        '{state: $t[0].state, run: $run, runRoot: $root, disjunct: $t[0].disjunct,
-          reason: $t[0].reason, retained: $run} + (if ($t[0].hostReason // "") == "" then {}
-          else {hostReason: $t[0].hostReason} end)'
-      ;;
-    daemon-gone)
-      "$question_jq" -n --arg run "$question_run" --arg root "$question_root" \
-        --arg reason "the supervising daemon is gone and published no terminal within ${question_grace}s" \
-        '{state: "aborted", run: $run, runRoot: $root, disjunct: "daemon-gone-no-terminal",
-          reason: $reason, retained: $run}'
-      ;;
-    abandoned)
-      "$question_jq" -n --arg run "$question_run" --arg root "$question_root" \
-        '{state: "abandoned", run: $run, runRoot: $root,
-          reason: "the reviewer left the question before the answer was delivered; the review is unaffected"}'
-      ;;
-    expired)
-      # The review waited its human budget for an answer and stopped. The
-      # question is DONE, not retried: the reviewer may simply ask again.
-      "$question_jq" -n --arg run "$question_run" --arg root "$question_root" \
-        '{state: "expired", run: $run, runRoot: $root,
-          reason: "the question lapsed unanswered; the reviewer may ask again"}'
-      ;;
-    answered)
-      # `answered` is asserted ONLY here, and only on a consumption record the
-      # review published. This leg never claims delivery on the strength of
-      # having written a file.
-      "$question_jq" -n --arg run "$question_run" --arg root "$question_root" \
-        '{state: "answered", run: $run, runRoot: $root,
-          note: "the review took the answer. The replacement receiver remains responsible for the next event."}'
-      ;;
-    waiting)
-      "$question_jq" -n --arg state waiting --arg run "$question_run" --arg root "$question_root" \
-        '{state: $state, run: $run, runRoot: $root,
-          note: "the machine budget for this leg expired; the review is untouched. Resume with: --poll-question"}'
-      ;;
-    *)
-      question_fail "unhandled poll state '${question_state:-}'"
-      ;;
-  esac
-}
-
-# question_parse_run_options reads the options every run-directed leg shares.
-question_parse_run_options() {
-  question_run=
-  question_text_file=
-  question_reason=
-  question_for_id=
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      --run) [[ $# -ge 2 ]] || invocation_usage; question_run=$2; shift 2 ;;
-      --for-question) [[ $# -ge 2 ]] || invocation_usage; question_for_id=$2; shift 2 ;;
-      --text-file) [[ $# -ge 2 ]] || invocation_usage; question_text_file=$2; shift 2 ;;
-      --reason) [[ $# -ge 2 ]] || invocation_usage; question_reason=$2; shift 2 ;;
-      --machine-budget) [[ $# -ge 2 ]] || invocation_usage; question_machine_budget=$2; shift 2 ;;
-      --grace) [[ $# -ge 2 ]] || invocation_usage; question_grace=$2; shift 2 ;;
-      *) invocation_usage ;;
-    esac
-  done
-}
-
-# question_resolve_identity turns the opaque packet id back into the one run and
-# index that minted it. The grammar admits no path separators, so an id cannot
-# escape the current question root. An explicit --run is debugging-only and
-# must name the same run; disagreement fails instead of choosing one authority.
-question_resolve_identity() {
-  [[ -n $question_for_id ]] || invocation_usage
-  [[ $question_for_id =~ ^(run[.-][A-Za-z0-9]+)#([1-9][0-9]*)$ ]] ||
-    question_fail "malformed question id: $question_for_id"
-  local run_name=${BASH_REMATCH[1]} n=${BASH_REMATCH[2]} root
-  if [[ -z $question_run ]]; then
-    root=$(question_run_root)
-    question_run=${root%/}/$run_name
-  fi
-  question_load_run
-  [[ ${question_run##*/} == "$run_name" ]] ||
-    question_fail "question id $question_for_id belongs to a different run"
-  [[ -f $question_run/question-$n.json ]] ||
-    question_fail "question id $question_for_id does not name a question"
-  question_resolved_index=$n
-}
-
-# question_run_artifact names the document a run is reviewing, for a refusal that
-# has to tell a person which reviews are in play.
-question_run_artifact() {
-  "$question_jq" -r '.artifact // "unknown artifact"' "$1/config.json" 2>/dev/null ||
-    printf 'unknown artifact\n'
-}
-
-# question_run_matches reports whether one run directory is the kind of run the
-# named leg belongs to. Both predicates are load-bearing.
-question_run_matches() {
-  local run=$2 raw
-  case $1 in
-    question)
-      # An OUTSTANDING question is the only thing an answer or a decline can be
-      # about, so answered and abandoned runs fall out here and cannot be
-      # answered twice. A run whose first question is finished and whose second is
-      # waiting IS asking, which is the state a strictly sequential second
-      # question left undeliverable before the index existed.
-      #
-      # The matched index is published so the caller can CARRY it rather than
-      # scanning again. See question_resolve_run.
-      question_matched_index=$(question_outstanding_index "$run")
-      [[ -n $question_matched_index ]] || return 1
-      # A LAPSED question matches only while its run is LIVE. The answer leg
-      # for a review still in progress must reach it — that is the waiter who
-      # hears `expired` by name and writes the retirement marker — but once
-      # the run has finished, an UNREPORTED lapse must stop matching, or the
-      # dead run poisons every later handle-free resolution in this directory
-      # as a permanent "reviews are in play" candidate. Fresh questions are
-      # untouched by this gate.
-      if question_expired_p "$run" "$question_matched_index"; then
-        [[ -s $run/daemon.pid ]] || return 1
-        raw=$(<"$run/daemon.pid")
-        raw=${raw//[^0-9]/}
-        [[ -n $raw ]] || return 1
-        question_process_alive "$raw"
-        return
-      fi
-      ;;
-    *)
-      # LIVE, OR CARRYING AN UNCOLLECTED RESULT. The second disjunct is not
-      # tidiness: "the run whose review is still live" was the obvious predicate
-      # and it excluded exactly the state the caller most needs to reach — a
-      # review that had finished, published its result and its launcher-exit,
-      # and whose daemon had exited, leaving the result on disk reachable only
-      # with a handle nobody has.
-      if [[ -s $run/trusted-result.json && -f $run/launcher-exit ]]; then
-        [[ ! -f $run/result.collected ]]
-        return
-      fi
-      [[ ! -f $run/launcher-exit && ! -s $run/terminal.json ]] || return 1
-      [[ -s $run/daemon.pid ]] || return 1
-      raw=$(<"$run/daemon.pid")
-      raw=${raw//[^0-9]/}
-      [[ -n $raw ]] || return 1
-      question_process_alive "$raw"
-      ;;
-  esac
-}
-
-# question_resolve_run finds the run this leg belongs to when the caller supplied
-# no --run.
-#
-# NOBODY TYPES A RUN DIRECTORY. The handle's only source is the arming leg's
-# JSON, and a journey that requires a person to lift a 150-character path out of
-# it and carry it forward is a journey only its author can drive. `--run` stays
-# accepted for debugging; it is no longer how the journey is driven.
-#
-# AMBIGUITY REFUSES AND WRITES NOTHING. Two reviews waiting is the case where
-# guessing delivers a reviewer someone else's answer, which is worse than
-# stopping, so the refusal names every candidate and its document instead.
-#
-# RESOLUTION ALSO PUBLISHES THE INDEX IT MATCHED, in question_resolved_index, and
-# the answer and decline legs use it rather than deriving the index a second time.
-# Two scans can disagree: between them the reviewer may abandon question N and ask
-# N+1, and a leg that re-scanned would claim `answer-(N+1).json` for text composed
-# about N, find no abandon record for N+1, and have that answer consumed as the
-# new question's. Silently — which is the harm the one-outstanding cap exists to
-# exclude, so window size is not the axis it is judged on. Carrying the index
-# makes the leg claim N, whose abandon record the ordering check then catches.
-question_resolve_run() {
-  local purpose=$1 root candidate count=0 chosen= chosen_index= names=
-  root=$(question_run_root)
-  if [[ -d $root ]]; then
-    for candidate in "$root"/run.*; do
-      [[ -d $candidate && -f $candidate/config.json ]] || continue
-      question_run_matches "$purpose" "$candidate" || continue
-      (( count += 1 ))
-      chosen=$candidate
-      chosen_index=${question_matched_index:-}
-      names+="  $candidate ($(question_run_artifact "$candidate"))"$'\n'
-    done
-  fi
-  if (( count == 0 )); then
-    if [[ $purpose == question ]]; then
-      question_fail "no review in $root has a question waiting for an answer"
-    fi
-    question_fail "no review in $root is open or has a result waiting to be collected"
-  fi
-  if (( count > 1 )); then
-    question_fail "$count reviews in $root are in play and nothing was written; ask which document is meant:"$'\n'"${names%$'\n'}"
-  fi
-  question_run=$chosen
-  question_resolved_index=$chosen_index
-}
-
-# question_leg_index is the question index a run-directed leg acts on.
-#
-# It prefers the index RESOLUTION matched, so the run and the question are chosen
-# by one scan rather than two. Only the `--run` debugging path, which skips
-# resolution, derives it here — and it takes the LATEST index rather than the
-# outstanding one, so an already-answered newest question still reaches the
-# claim's two precise refusals instead of one vague "no outstanding question".
-question_leg_index() {
-  if [[ -n ${question_resolved_index:-} ]]; then
-    printf '%s\n' "$question_resolved_index"
-    return 0
-  fi
-  question_latest_index "$question_run"
-}
-
-question_leg_poll() {
-  question_require_jq
-  question_parse_run_options "$@"
-  [[ -n $question_run ]] || question_resolve_run review
-  question_load_run
-  question_wait
-  question_report
-}
-
-# question_leg_answer brings the agent session's answer back to the open review.
-#
-# DELIVERY IS ASSERTED BY THE CONSUMER, never by this side. This leg writes an
-# answer and then waits to be told the review took it; it does not report
-# `answered` on the strength of having written a file. That is what makes
-# abandonment WIN at delivery rather than usually win: a reviewer who left is
-# never told their question was answered, and neither is the agent session.
-question_leg_answer() {
-  question_require_jq
-  question_parse_run_options "$@"
-  [[ -n $question_text_file ]] || invocation_usage
-  question_resolve_identity
-  [[ -f $question_text_file && -r $question_text_file ]] || \
-    question_fail "not a readable answer file: $question_text_file"
-  local question_n
-  question_n=$(question_leg_index)
-  if [[ -f $question_run/question-$question_n.abandoned ]]; then
-    question_fail "question id $question_for_id was abandoned; nothing was written"
-  fi
-  if [[ -f $question_run/decline-$question_n.json ]]; then
-    question_fail "question id $question_for_id was declined; nothing was written"
-  fi
-  # A question PAST THE HUMAN BUDGET is decided: the review stopped waiting,
-  # so an answer composed for it can never be read. Say so BY NAME — this leg
-  # is where a waiter exists to hear it — and claim nothing: an answer that
-  # cannot be read must not be written.
-  if [[ -f $question_run/question-$question_n.expired ]] ||
-    question_expired_p "$question_run" "$question_n"; then
-    question_retire_expired "$question_n"
-    question_state=expired
-    question_report
-    return 0
-  fi
-  # ONE FROZEN QUESTION RECEIVES ONE ANSWER ONCE — an ANSWER, not an ATTEMPT.
-  #
-  # The distinction is the whole point and the two-step version got it wrong: it
-  # enforced one attempt, because a failed attempt still consumed the only claim.
-  #
-  # Checking the CONSUMPTION record was not enough: a first leg that expired before
-  # the review consumed its answer left `answer-N.json` unclaimed, and a retry then
-  # overwrote it — so the reviewer could be shown an answer a later turn wrote, and
-  # the first leg's `answered` could describe bytes that no longer exist.
-  #
-  # THE CLAIM AND THE PAYLOAD ARE ONE EXCLUSIVE REDIRECT. `set -C` makes the
-  # redirect below O_EXCL, so creating the file and filling it are the same
-  # operation. That is the correct primitive for "this file is written once", and
-  # it is NOT the temp-then-rename ceremony the captain cut — that was a
-  # protocol-wide ritual on every message; this is one O_EXCL on one file.
-  #
-  # Claiming in two steps was a real defect, and its own class: not a race the
-  # mechanism created, but a FAILURE-ATOMICITY GAP in a sequence that should have
-  # been one step. An empty file created ahead of the payload permanently claimed
-  # the question if the write was interrupted — the review ignored it as malformed
-  # and waited out the full human budget, while every retry was refused by this
-  # very guard. That is WORSE than no claim at all, and this environment kills
-  # processes mid-write, so the trigger was not hypothetical.
-  #
-  # On any failure the incomplete file is removed, so a recoverable delivery
-  # failure stays recoverable and the caller may simply answer again.
-  # The subshell contains both `set -C` and the shell's own noclobber diagnostic,
-  # which would otherwise leak "cannot overwrite existing file" onto the caller's
-  # stderr on the ordinary path where a peer already holds the claim.
-  if ! (
-    set -C
-    "$question_jq" -n --rawfile text "$question_text_file" \
-      --arg responder "${SUBSPACE_QUESTION_RESPONDER:-the session that opened this review}" \
-      '{answer: $text, evidence: [], responder: $responder}' \
-      > "$question_run/answer-$question_n.json"
-  ) 2>/dev/null; then
-    if question_is_a_claim "$question_run/answer-$question_n.json"; then
-      # A file that PARSES AS AN ANSWER is a peer's claim, not our failure.
-      if [[ -f $question_run/answer-$question_n.consumed ]]; then
-        question_fail 'this question has already been answered and the review took that answer'
-      fi
-      question_fail "this question already has an answer awaiting the review; resume with --poll-question --run $question_run"
-    fi
-    # Empty OR unparseable: not a claim, so it is removed and answering again is
-    # safe. A partial file is the residue of an interrupted write and describes no
-    # answer anybody could read.
-    rm -f -- "$question_run/answer-$question_n.json"
-    question_fail 'could not deliver the answer; nothing was claimed, so answering again is safe'
-  fi
-
-  local started=$SECONDS
-  while :; do
-    if [[ -f $question_run/answer-$question_n.consumed ]]; then
-      break
-    fi
-    # Abandonment is checked before any success path, so an answer that lands
-    # after the reviewer left is reported as abandoned and never as answered.
-    if [[ -f $question_run/question-$question_n.abandoned ]]; then
-      question_state=abandoned
-      question_report
-      return 0
-    fi
-    # Expiry next, for the same reason: an answer that lands after the
-    # question lapsed is reported as expired and never as answered — the
-    # review stopped waiting, so no consumption can come.
-    if question_expired_p "$question_run" "$question_n"; then
-      question_retire_expired "$question_n"
-      question_state=expired
-      question_report
-      return 0
-    fi
-    question_poll_once
-    # A finished review ends forwarding but its result/terminal belongs to the
-    # replacement receiver, which was already started and is the only command
-    # allowed to collect the next event. This writer reports only that its
-    # answer was not consumed. A fresh question is likewise left receivable:
-    # forwarding must never turn into the next poll, even if the receiver was
-    # killed and has not yet claimed that event.
-    if [[ -n $question_state ]]; then
-      case $question_state in
-        question)
-          question_state=
-          ;;
-        result|terminal|daemon-gone)
-          question_state=abandoned
-          question_report
-          return 0
-          ;;
-      esac
-    fi
-    if [[ -n $question_state ]]; then
-      question_report
-      return 0
-    fi
-    if [[ -n $question_machine_budget ]] && (( SECONDS - started >= question_machine_budget )); then
-      question_state=waiting
-      question_report
-      return 0
-    fi
-    sleep 0.2
-  done
-
-  # ANSWER FORWARDING ENDS AT ACKNOWLEDGEMENT. The replacement receiver was
-  # started before answer synthesis and already owns the review's next event;
-  # letting this short writer enter question_wait was the rejected foreground
-  # follow-up poll in another shape.
-  question_state=answered
-  question_report
-}
-
-# question_leg_decline tells a waiting reviewer that no answer is coming.
-#
-# A reviewer watching "waiting for the session that opened this review" while
-# that session has already given up is the incident this leg exists for.
-question_leg_decline() {
-  question_require_jq
-  question_parse_run_options "$@"
-  [[ -n $question_reason ]] || invocation_usage
-  question_resolve_identity
-  # The decline names the question it is about, from the index resolution
-  # matched. Landing it on question 1 while the reviewer waits on question 2 tells
-  # the reviewer nothing and leaves a durable record describing an exchange that
-  # already finished.
-  local question_n
-  question_n=$(question_leg_index)
-  question_open_p "$question_run" "$question_n" ||
-    question_fail "question id $question_for_id is no longer open; nothing was written"
-  if question_expired_p "$question_run" "$question_n"; then
-    question_fail "question id $question_for_id expired; nothing was written"
-  fi
-  "$question_jq" -n --arg reason "$question_reason" \
-    '{type: "subspace-question-declined", reason: $reason}' \
-    > "$question_run/decline-$question_n.json" || question_fail 'could not deliver the decline'
-  "$question_jq" -n --arg run "$question_run" --arg root "$question_root" --arg reason "$question_reason" \
-    '{state: "declined", run: $run, runRoot: $root, disjunct: "declined", reason: $reason}'
-}
-
-# question_leg_arm is invocation 1: the agent session's entry into the journey.
-#
-# It mints the run, spawns the daemon, and EXITS carrying whatever the review has
-# produced by then — a question, a finished result, or an abort. It does not open
-# the review itself: the daemon re-invokes THIS SAME ENTRY with --question-run,
-# which is the ordinary blocking review flow, so host placement is untouched and
-# the process that spawns the review is the same one that reads its result.
 question_leg_arm() {
-  local supplied= seen_arm_mode=0
-  question_run=
-  invocation_mode=feedback
+  local supplied= mode=feedback budget= question_run poll_args
+  local seen_mode=0
   while [[ $# -gt 0 ]]; do
     case $1 in
       --mode)
         [[ $# -ge 2 ]] || invocation_usage
-        [[ $seen_arm_mode == 0 ]] || question_fail 'duplicate --mode'
-        seen_arm_mode=1
-        invocation_mode=$2
+        [[ $seen_mode == 0 ]] || question_fail 'duplicate --mode'
+        seen_mode=1
+        mode=$2
         shift 2
         ;;
-      --machine-budget) [[ $# -ge 2 ]] || invocation_usage; question_machine_budget=$2; shift 2 ;;
-      -*) invocation_usage ;;
-      *) [[ -z $supplied ]] || invocation_usage; supplied=$1; shift ;;
+      --machine-budget)
+        [[ $# -ge 2 ]] || invocation_usage
+        budget=$2
+        shift 2
+        ;;
+      -*)
+        invocation_usage
+        ;;
+      *)
+        [[ -z $supplied ]] || invocation_usage
+        supplied=$1
+        shift
+        ;;
     esac
   done
   [[ -n $supplied ]] || invocation_usage
-  question_require_jq
-  invocation_validate_mode "$invocation_mode"
+  [[ -z $budget || $budget =~ ^[0-9]+$ ]] ||     question_fail "machine budget must be a whole number of seconds, not '$budget'"
+  question_transport_require
+  question_run=$("$question_transport_bin" --question-transport arm     --mode "$mode" --artifact "$supplied") ||     question_fail 'could not arm the question run'
 
-  # Validate the budgets HERE, before a daemon is spawned to refuse them. A
-  # daemon that refuses its own arguments is a daemon that may not be running,
-  # and the caller's only evidence would be an indefinite `waiting`.
-  [[ -z $question_machine_budget || $question_machine_budget =~ ^[0-9]+$ ]] || \
-    question_fail "machine budget must be a whole number of seconds, not '$question_machine_budget'"
-  [[ $question_grace =~ ^[0-9]+$ ]] || \
-    question_fail "grace must be a whole number of seconds, not '$question_grace'"
-
-  # ONE MODE END TO END. The grammar carries all three declared values because
-  # the caller DECLARES authority rather than having it recovered; this journey
-  # implements exactly one of them and refuses the others BY NAME, rather than
-  # plumbing a mode it cannot finalize. Three modes plumbed while one could
-  # finalize is the recorded mirror-image finding.
-  [[ $invocation_mode == feedback ]] || \
-    question_fail "mode '$invocation_mode' is declared but this journey implements feedback only"
-
-  # Fails fast on an unreadable artifact, and yields the canonical path and the
-  # pinned revision the declaration below records. Nothing has been created yet,
-  # so a refusal here has nothing to retain.
-  invocation_profile=one-file
-  invocation_created=0
-  invocation_prepare_artifact "$supplied"
-
-  umask 077
-  local root
-  root=$(question_run_root)
-  if ! mkdir -p "$root" 2>/dev/null; then
-    [[ -z ${SUBSPACE_QUESTION_RUN_ROOT:-} ]] || \
-      question_fail "could not create the run root: $root"
-    root=$(question_safe_run_root) || \
-      question_fail 'could not determine a secure alternate run root'
-    question_prepare_safe_root "$root" || \
-      question_fail "could not create a secure alternate run root: $root"
-  fi
-  chmod 700 "$root" 2>/dev/null || true
-  if ! question_run=$(mktemp -d "$root/run.XXXXXX" 2>/dev/null); then
-    [[ -z ${SUBSPACE_QUESTION_RUN_ROOT:-} ]] || \
-      question_fail "could not mint a run directory in the declared root: $root"
-    root=$(question_safe_run_root) || \
-      question_fail 'could not determine a secure alternate run root'
-    question_prepare_safe_root "$root" || \
-      question_fail "could not create a secure alternate run root: $root"
-    question_run=$(mktemp -d "$root/run.XXXXXX") || \
-      question_fail 'could not mint a run directory'
-  fi
-  question_run=$(CDPATH= cd -- "$question_run" && pwd -P) || \
-    question_fail 'could not resolve the run directory'
-  question_set_root
-
-  # THE CALLER'S DECLARATION, WRITTEN DOWN. Nothing downstream recovers the mode
-  # or the retained source kind from a command line, from which fields are
-  # absent, or by comparing two identities. They are read from here and nowhere
-  # else.
-  "$question_jq" -n --arg mode "$invocation_mode" --arg artifact "$invocation_artifact" \
-    --arg rev "$invocation_revision" \
-    '{type: "subspace-question-run", mode: $mode, retainedSourceKind: "one-file",
-      artifact: $artifact, artifactRev: $rev}' \
-    > "$question_run/config.json" || question_fail 'could not write the run config'
-
-  # Spawn the daemon as THIS INVOCATION'S CHILD, detached. `setsid` does not
-  # exist on macOS, so the portable equivalent is bash job control: `set -m`
-  # gives the daemon its own process group, and `nohup` detaches it from this
-  # terminal. Measured: the daemon survives SIGTERM to this invocation's whole
-  # process group, which is what "survives the entry exiting or being killed"
-  # requires.
   set -m
-  nohup "$script_dir/review-question-daemon" "$question_run" --grace "$question_grace" \
-    -- "$0" --question-run "$question_run" --mode "$invocation_mode" "$invocation_artifact" \
-    >> "$question_run/daemon.stderr" 2>&1 &
+  nohup "$script_dir/review-question-daemon" "$question_run" --grace 3     --transport-bin "$question_transport_bin" --     "$0" --question-run "$question_run" --mode "$mode" "$supplied"     >> "$question_run/daemon.stderr" 2>&1 &
   disown 2>/dev/null || true
   set +m
 
-  # WAIT FOR THE DAEMON TO EXIST, and say so by name if it never does.
-  #
-  # `$?` after `nohup … &` is the ASYNC LIST's status and is always 0, so the
-  # guard that used to stand here could never fire. A daemon that failed to start
-  # therefore left the journey reporting a healthy-looking `waiting` forever, with
-  # the note asserting a review exists when none does — the exact indefinite wait
-  # the daemon was introduced to eliminate. The only honest evidence that the
-  # daemon is running is its own published pid.
-  local waited=0
+  local waited=0 why
   while [[ ! -s $question_run/daemon.pid ]]; do
     (( waited += 1 ))
     if (( waited > 100 )); then
-      local why
       why=$(awk 'NF { last = $0 } END { print last }' "$question_run/daemon.stderr" 2>/dev/null)
       [[ -n $why ]] || why='it published no pid and said nothing'
       question_fail "the supervising daemon did not start: $why; retained run: $question_run"
@@ -1156,8 +306,26 @@ question_leg_arm() {
     sleep 0.1
   done
 
-  question_wait
-  question_report
+  poll_args=(--question-transport poll --run "$question_run")
+  if [[ -n $budget ]]; then
+    poll_args+=(--machine-budget "$budget")
+  fi
+  exec "$question_transport_bin" "${poll_args[@]}"
+}
+
+question_leg_poll() {
+  question_transport_require
+  exec "$question_transport_bin" --question-transport poll "$@"
+}
+
+question_leg_answer() {
+  question_transport_require
+  exec "$question_transport_bin" --question-transport answer "$@"
+}
+
+question_leg_decline() {
+  question_transport_require
+  exec "$question_transport_bin" --question-transport decline "$@"
 }
 
 invocation_main() {
