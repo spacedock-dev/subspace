@@ -33,11 +33,15 @@ own; see *Answer questions during a review*.
 `--placement <floating|right>` is a third optional modifier on that same form,
 declaring where the review surface opens. Placement is presentation-only: it
 grants nothing and leaves the review protocol, the child invocation, and the
-result untouched. An omitted token means `floating`. `right` is a Zellij-only
-declaration: refuse it with every other terminal name, and refuse every
-malformed placement — an unknown value, a duplicate, or a missing value —
-before invoking any entry. Pass the token only to `review-zellij`; every other
-entry refuses it as unknown grammar. Never combine `--placement` with
+result untouched. An omitted token means `floating` for Zellij, but `right`
+for tmux — tmux's own default, since a split is part of the actual pane tree
+and mirrors live to every client attached to the session, while a popup is a
+per-client overlay a second attached client never sees. `right` is a Zellij-
+and tmux-only declaration: refuse it with every other terminal name (Herdr,
+CMUX, Ghostty, Apple Terminal), and refuse every malformed placement — an
+unknown value, a duplicate, or a missing value — before invoking any entry.
+Pass the token only to `review-zellij` or `review-tmux`; every other entry
+refuses it as unknown grammar. Never combine `--placement` with
 `--allow-question` or `--review-v1`: those journeys re-invoke the entry with a
 fixed argv and would silently drop it, so the combination is refused by name.
 Package mode requires only one readable regular Briefing file plus
@@ -142,8 +146,16 @@ second host, or second launch.
   `--placement right` it substitutes a right split of the caller's tab for the
   float — the split lands relative to the tab's focused pane — with tab
   targeting, blocking, and the child invocation unchanged.
-- tmux validates the exact caller pane and attached client, then opens one
-  blocking popup targeted at that pane.
+- tmux validates the exact caller pane, then by default opens a blocking
+  right split of the caller's pane — `split-window` does not block like a
+  popup does, so the entry polls the split's own liveness instead, which also
+  bounds cancellation (closing or killing the split directly) the same way
+  every other placement's cancellation is bounded — then closes the split.
+  With `--placement floating` it opens a blocking popup targeted at that pane
+  instead, gated on its own session's attached client count: a popup is a
+  per-client overlay, so more than one attached client makes tmux's own
+  "client currently in use" resolution genuinely ambiguous, unlike the split
+  which is targeted purely by pane.
 - Herdr creates one right split with `--no-focus` and submits one private child
   capsule to that owned pane.
 - CMUX creates one terminal surface in the caller pane, starts its child

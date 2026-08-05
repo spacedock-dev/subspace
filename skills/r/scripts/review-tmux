@@ -7,6 +7,46 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=invocation-common
 source "$script_dir/invocation-common"
 
+# --placement is this entry's grammar alone, mirroring review-zellij's. The
+# pre-scan runs before invocation_main, so every refusal lands before any host
+# probe or launch.
+#
+# Unlike Zellij (whose omitted default stays floating), tmux defaults to
+# `right`: a split is part of the window's actual pane tree, which tmux
+# mirrors live to every client attached to the session, while a popup is a
+# per-client overlay (tmux(1): "display a popup ... on target-client"; a
+# captain-observed live run confirmed a second attached client's screen was
+# untouched by a popup the first client opened). floating remains available
+# as an explicit opt-in.
+invocation_placement=right
+invocation_placement_fail() {
+  printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
+  exit 2
+}
+invocation_args=()
+seen_placement=0
+seen_armed=
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --placement)
+      [[ $# -ge 2 && $2 != -* ]] || \
+        invocation_placement_fail '--placement requires a value: floating or right'
+      [[ $seen_placement == 0 ]] || invocation_placement_fail 'duplicate --placement'
+      seen_placement=1
+      case $2 in
+        floating|right) invocation_placement=$2 ;;
+        *) invocation_placement_fail "unknown placement: $2" ;;
+      esac
+      shift 2
+      ;;
+    --allow-question|--review-v1) seen_armed=$1; invocation_args+=("$1"); shift ;;
+    *) invocation_args+=("$1"); shift ;;
+  esac
+done
+[[ -z $seen_armed || $seen_placement == 0 ]] || \
+  invocation_placement_fail "--placement cannot be combined with $seen_armed"
+set -- ${invocation_args[@]+"${invocation_args[@]}"}
+
 invocation_host_preflight() {
   [[ -n ${TMUX:-} ]] || invocation_preflight_fail 'TMUX is required'
   [[ -n ${TMUX_PANE:-} ]] || invocation_preflight_fail 'TMUX_PANE is required'
@@ -22,20 +62,64 @@ invocation_host_preflight() {
     invocation_preflight_fail "operation list-panes failed with status $status" "$status"
   }
   [[ $pane_count == 1 ]] || invocation_preflight_fail 'TMUX_PANE is not uniquely live'
-  client_count=$("$tmux_bin" list-clients -F '#{client_name}' 2>/dev/null | awk 'NF {count++} END {print count+0}') || {
-    status=$?
-    invocation_preflight_fail "operation list-clients failed with status $status" "$status"
-  }
-  [[ $client_count == 1 ]] || invocation_preflight_fail 'exactly one attached tmux client is required'
+  # A split (the default) is targeted purely by pane and mirrors to every
+  # client attached to the session, so client count is irrelevant to it — a
+  # second attached client is exactly as authorized as the first, and
+  # new-pane/split-window need no client resolution at all (tmux(1)).
+  #
+  # A popup is a per-client overlay: tmux(1) says a popup with no -c "attempts
+  # to work out the client currently in use", which is genuinely ambiguous
+  # with more than one client attached to the caller's session (this entry
+  # has no reliable way to name "the" invoking client, only its pane). This
+  # check exists only to keep that resolution unambiguous, so it is scoped to
+  # the floating path and to the caller's own session — list-clients with no
+  # -t counts every client on the whole tmux server, which would let an
+  # unrelated session's client falsely trip it.
+  if [[ $invocation_placement == floating ]]; then
+    local caller_session
+    caller_session=$("$tmux_bin" display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null) || {
+      status=$?
+      invocation_preflight_fail "operation display-message failed with status $status" "$status"
+    }
+    [[ -n $caller_session ]] || invocation_preflight_fail 'could not resolve the caller tmux session'
+    client_count=$("$tmux_bin" list-clients -t "$caller_session" -F '#{client_name}' 2>/dev/null | awk 'NF {count++} END {print count+0}') || {
+      status=$?
+      invocation_preflight_fail "operation list-clients failed with status $status" "$status"
+    }
+    [[ $client_count == 1 ]] || invocation_preflight_fail 'exactly one attached tmux client is required'
+  fi
 }
 
 invocation_host_dispatch() {
   local command
   printf -v command '%q ' "${invocation_command[@]}"
   command=${command% }
-  invocation_residue='; operation: display-popup'
-  "$tmux_bin" display-popup -E -t "$TMUX_PANE" -d "$invocation_artifact_dir" "$command" \
-    >/dev/null 2>/dev/null
+  if [[ $invocation_placement == right ]]; then
+    # tmux split-window does not block like Zellij's --block-until-exit, so
+    # the caller polls for the split's own liveness instead. remain-on-exit
+    # is off by default, so a finished pane simply disappears from the pane
+    # tree; polling that (or an explicit dead pane, if a host's tmux.conf
+    # enables remain-on-exit) also bounds cancellation the same way every
+    # other placement's cancellation path is bounded: a user who closes or
+    # kills the split pane directly never reaches an appended completion
+    # signal, so a signal-channel wait would hang forever on that path.
+    local new_pane alive
+    invocation_residue='; operation: split-window'
+    new_pane=$("$tmux_bin" split-window -h -P -F '#{pane_id}' -t "$TMUX_PANE" \
+      -c "$invocation_artifact_dir" "$command") || return $?
+    invocation_residue="; operation: split-window; pane: $new_pane"
+    while :; do
+      alive=$("$tmux_bin" list-panes -a -F '#{pane_id} #{pane_dead}' 2>/dev/null | \
+        awk -v pane="$new_pane" '$1 == pane && $2 == 0 {c++} END {print c+0}')
+      [[ $alive == 1 ]] || break
+      sleep 0.1
+    done
+    "$tmux_bin" kill-pane -t "$new_pane" >/dev/null 2>&1 || true
+  else
+    invocation_residue='; operation: display-popup'
+    "$tmux_bin" display-popup -E -t "$TMUX_PANE" -d "$invocation_artifact_dir" "$command" \
+      >/dev/null 2>/dev/null
+  fi
 }
 
 invocation_main "$@"

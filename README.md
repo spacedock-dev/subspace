@@ -32,6 +32,22 @@ Add `~/.local/bin` to your `PATH` if it is not already there.
 sr path/to/file.md
 ```
 
+### Install the companion agent skill
+
+In Claude Code, add the marketplace and install the plugin:
+
+```sh
+claude plugin marketplace add spacedock-dev/marketplace
+claude plugin install subspace@subspace-beta
+```
+
+In Codex, add the marketplace and the plugin:
+
+```sh
+codex plugin marketplace add spacedock-dev/subspace-beta --json
+codex plugin add subspace@subspace-beta --json
+```
+
 From an agent session with the companion skill installed, invoke:
 
 ```text
@@ -42,6 +58,17 @@ In Codex, invoke:
 
 ```text
 $r path/to/file.md
+```
+
+Add `--allow-question` to let the reviewer ask your agent questions about the
+file while the review stays open, and read the answer in the same surface:
+
+```text
+/r --allow-question path/to/file.md
+```
+
+```text
+$r --allow-question path/to/file.md
 ```
 
 ## Agent integration

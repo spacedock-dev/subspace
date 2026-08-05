@@ -249,9 +249,20 @@ question_fail() {
   exit "${2:-2}"
 }
 
+# SUBSPACE_TUI_BIN is a caller-private override, not skill grammar: when set,
+# it wins over PATH resolution so a build ahead of the installed release can
+# be exercised without a Homebrew upgrade.
+invocation_resolve_tui_bin() {
+  if [[ -n ${SUBSPACE_TUI_BIN:-} ]]; then
+    printf '%s\n' "$SUBSPACE_TUI_BIN"
+  else
+    command -v subspace-tui 2>/dev/null
+  fi
+}
+
 question_transport_require() {
   local found
-  found=$(command -v subspace-tui 2>/dev/null) ||     question_fail 'subspace-tui is unavailable; read skills/r/references/subspace-tui-unavailable.md' 127
+  found=$(invocation_resolve_tui_bin) ||     question_fail 'subspace-tui is unavailable; read skills/r/references/subspace-tui-unavailable.md' 127
   [[ $found == /* ]] || question_fail 'subspace-tui did not resolve to an absolute path'
   question_transport_bin=$(invocation_canonical_file "$found") ||     question_fail 'could not resolve the exact subspace-tui target'
   [[ -f $question_transport_bin && ! -L $question_transport_bin && -x $question_transport_bin ]] ||     question_fail 'subspace-tui target is not an executable regular file'
@@ -396,7 +407,7 @@ invocation_main() {
     invocation_prepare_artifact "$supplied"
   fi
 
-  found=$(command -v subspace-tui 2>/dev/null) || \
+  found=$(invocation_resolve_tui_bin) || \
     invocation_preflight_fail 'subspace-tui is unavailable; read skills/r/references/subspace-tui-unavailable.md' 127
   [[ $found == /* ]] || invocation_preflight_fail 'subspace-tui did not resolve to an absolute path'
   invocation_tui=$(invocation_canonical_file "$found") || \
