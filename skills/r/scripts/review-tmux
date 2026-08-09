@@ -11,13 +11,12 @@ source "$script_dir/invocation-common"
 # pre-scan runs before invocation_main, so every refusal lands before any host
 # probe or launch.
 #
-# Unlike Zellij (whose omitted default stays floating), tmux defaults to
-# `right`: a split is part of the window's actual pane tree, which tmux
-# mirrors live to every client attached to the session, while a popup is a
-# per-client overlay (tmux(1): "display a popup ... on target-client"; a
-# captain-observed live run confirmed a second attached client's screen was
-# untouched by a popup the first client opened). floating remains available
-# as an explicit opt-in.
+# Both Zellij and tmux default to `right`: a split is part of the window's
+# actual pane tree, which tmux mirrors live to every client attached to the
+# session, while a popup is a per-client overlay (tmux(1): "display a popup
+# ... on target-client"; a captain-observed live run confirmed a second
+# attached client's screen was untouched by a popup the first client opened).
+# floating remains available as an explicit opt-in.
 invocation_placement=right
 invocation_placement_fail() {
   printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
@@ -55,39 +54,13 @@ invocation_host_preflight() {
     tmux_bin=$(command -v -- "$tmux_bin") || invocation_preflight_fail 'tmux is not installed' 127
   fi
   [[ -x $tmux_bin && ! -d $tmux_bin ]] || invocation_preflight_fail "tmux is not executable: $tmux_bin"
-  local pane_count client_count status
+  local pane_count status
   pane_count=$("$tmux_bin" list-panes -a -F '#{pane_id} #{pane_dead}' 2>/dev/null | \
     awk -v pane="$TMUX_PANE" '$1 == pane && $2 == 0 {count++} END {print count+0}') || {
     status=$?
     invocation_preflight_fail "operation list-panes failed with status $status" "$status"
   }
   [[ $pane_count == 1 ]] || invocation_preflight_fail 'TMUX_PANE is not uniquely live'
-  # A split (the default) is targeted purely by pane and mirrors to every
-  # client attached to the session, so client count is irrelevant to it — a
-  # second attached client is exactly as authorized as the first, and
-  # new-pane/split-window need no client resolution at all (tmux(1)).
-  #
-  # A popup is a per-client overlay: tmux(1) says a popup with no -c "attempts
-  # to work out the client currently in use", which is genuinely ambiguous
-  # with more than one client attached to the caller's session (this entry
-  # has no reliable way to name "the" invoking client, only its pane). This
-  # check exists only to keep that resolution unambiguous, so it is scoped to
-  # the floating path and to the caller's own session — list-clients with no
-  # -t counts every client on the whole tmux server, which would let an
-  # unrelated session's client falsely trip it.
-  if [[ $invocation_placement == floating ]]; then
-    local caller_session
-    caller_session=$("$tmux_bin" display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null) || {
-      status=$?
-      invocation_preflight_fail "operation display-message failed with status $status" "$status"
-    }
-    [[ -n $caller_session ]] || invocation_preflight_fail 'could not resolve the caller tmux session'
-    client_count=$("$tmux_bin" list-clients -t "$caller_session" -F '#{client_name}' 2>/dev/null | awk 'NF {count++} END {print count+0}') || {
-      status=$?
-      invocation_preflight_fail "operation list-clients failed with status $status" "$status"
-    }
-    [[ $client_count == 1 ]] || invocation_preflight_fail 'exactly one attached tmux client is required'
-  fi
 }
 
 invocation_host_dispatch() {

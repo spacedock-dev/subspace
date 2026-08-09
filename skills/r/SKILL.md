@@ -33,11 +33,12 @@ own; see *Answer questions during a review*.
 `--placement <floating|right>` is a third optional modifier on that same form,
 declaring where the review surface opens. Placement is presentation-only: it
 grants nothing and leaves the review protocol, the child invocation, and the
-result untouched. An omitted token means `floating` for Zellij, but `right`
-for tmux — tmux's own default, since a split is part of the actual pane tree
-and mirrors live to every client attached to the session, while a popup is a
-per-client overlay a second attached client never sees. `right` is a Zellij-
-and tmux-only declaration: refuse it with every other terminal name (Herdr,
+result untouched. An omitted token means `right` for both Zellij and tmux — a
+split is part of the actual pane tree and mirrors live to every client
+attached to the session, while a popup is a per-client overlay a second
+attached client never sees. `floating` remains available as an explicit
+opt-in on both hosts. `right` is a Zellij- and tmux-only declaration: refuse
+it with every other terminal name (Herdr,
 CMUX, Ghostty, Apple Terminal), and refuse every malformed placement — an
 unknown value, a duplicate, or a missing value — before invoking any entry.
 Pass the token only to `review-zellij` or `review-tmux`; every other entry
@@ -127,10 +128,11 @@ review-<selected-terminal> --review-v1 --actor <actor>
 ```
 
 Do not run a plan, prerequisite probe, version check, scratch command,
-validator, cleanup, retry, or second entry in another tool call. Keep the one
-blocking call and invoking turn alive until it returns. A nonzero return after
-launch includes a recoverable scratch path; report it and stop without another
-host or launch.
+validator, cleanup, retry, or second entry in another tool call. Before
+launch, select the implementation bound to the invoking runtime (see *Wait
+implementations* below) and use it to keep that one call and its result alive
+until it returns. A nonzero return after launch includes a recoverable
+scratch path; report it and stop without another host or launch.
 
 An armed review is the single exception. `--allow-question` cannot finish inside
 one blocking call, because the session that has to answer is blocked inside it,
@@ -139,23 +141,55 @@ described in *Answer questions during a review*. It authorizes nothing else:
 still no plan, probe, version check, scratch command, validator, cleanup, retry,
 second host, or second launch.
 
+### Wait implementations
+
+Two implementations keep the one blocking call and its result alive until the
+invoking turn can act on it; every invoking runtime is bound to exactly one.
+Neither changes what the one call does or how many times it happens — only
+how it is issued and awaited.
+
+- **Implementation 1: background-job-with-wakeup.** Start the call as a
+  background job and rely on the runtime's own proactive completion
+  notification to resume the invoking turn. There is no polling and no
+  bounded wait loop, and because the turn is never blocked on the call, no
+  foreground-call ceiling applies. See *Claude Code poller* below for the
+  exact mechanism.
+- **Implementation 2: foreground-job-with-background-wait.** The invoking
+  runtime does not rely on a passive one-shot notification; it requires an
+  actively re-armed bounded wait instead, yielding and re-waiting on a
+  bounded schedule rather than depending on a single notification to resume
+  the turn. See *Codex poller* (Codex) or *Claude Code sub-agent/teammate
+  poller* (a Claude Code sub-agent or teammate) below for the exact
+  mechanism.
+
+| Runtime | Implementation | Why |
+|---|---|---|
+| Claude Code, root session | 1 | Its proactive completion notification reliably wakes an idle root session; see *Claude Code poller*. |
+| Claude Code, sub-agent/teammate | 2 | The same passive background+notify pattern does not reliably wake an idle sub-agent or teammate turn; see *Claude Code sub-agent/teammate poller*. |
+| Codex | 2 | Already the documented, working shape of *Codex poller* below. |
+| Pi | Neither — out of scope | No Pi-specific poller exists in this skill. |
+
+A runtime absent from this table, or whose bound mechanism is unavailable in
+this session, issues the plain or package-mode call in the foreground and
+keeps the turn alive until it returns, unchanged from before. An armed
+review has no such fallback (see *Answer questions during a review*).
+
 ### Host-owned placement
 
-- Zellij resolves `ZELLIJ_PANE_ID` through one validated caller-tab inventory
-  and opens one blocking floating pane with the exact `--tab-id`. With
-  `--placement right` it substitutes a right split of the caller's tab for the
-  float — the split lands relative to the tab's focused pane — with tab
-  targeting, blocking, and the child invocation unchanged.
+- Zellij resolves `ZELLIJ_PANE_ID` through one validated caller-tab inventory,
+  then by default opens a right split of the caller's tab — the split lands
+  relative to the tab's focused pane — with tab targeting, blocking, and the
+  child invocation unchanged. With `--placement floating` it substitutes one
+  blocking floating pane with the exact `--tab-id` for the split instead.
 - tmux validates the exact caller pane, then by default opens a blocking
   right split of the caller's pane — `split-window` does not block like a
   popup does, so the entry polls the split's own liveness instead, which also
   bounds cancellation (closing or killing the split directly) the same way
   every other placement's cancellation is bounded — then closes the split.
   With `--placement floating` it opens a blocking popup targeted at that pane
-  instead, gated on its own session's attached client count: a popup is a
-  per-client overlay, so more than one attached client makes tmux's own
-  "client currently in use" resolution genuinely ambiguous, unlike the split
-  which is targeted purely by pane.
+  instead: a popup is a per-client overlay, invisible to any other client
+  attached to the same session, so no client-count precondition applies to
+  either placement.
 - Herdr creates one right split with `--no-focus` and submits one private child
   capsule to that owned pane.
 - CMUX creates one terminal surface in the caller pane, starts its child
@@ -262,6 +296,24 @@ Do not poll the task output while it runs. If background tasks are disabled or
 the completion notification is unavailable, the armed journey is unsupported
 in that Claude Code session.
 
+**Sub-agent/teammate note:** for a Claude Code sub-agent or teammate session,
+the completion notification above still fires internally on schedule but
+does not reliably surface as a wake for that session — a delivery gap, not
+an unavailable mechanism, so the blanket unsupported fallback above does not
+apply here. Use *Claude Code sub-agent/teammate poller* below instead of
+this poller's background+notify wake.
+
+### Claude Code sub-agent/teammate poller
+
+Invoke the selected entry with the Bash tool's `run_in_background: true` and
+capture the returned `bash_id`. On a bounded schedule, call
+`BashOutput(bash_id=...)` only to check `status` — never to extract output
+while `status` is `"running"`, since that call drains output already
+written and can consume the receiver JSON before completion. Sleep briefly
+between checks rather than blocking the invoking turn on one wait. Once
+`status` reports `"completed"`, read the task's output file once for the
+complete receiver JSON and proceed. This active status check does not
+depend on the completion notification *Claude Code poller* above relies on.
 
 Any invoking runtime without a section above is unsupported for an armed
 review.

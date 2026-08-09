@@ -372,7 +372,7 @@ invocation_main() {
     # --question-run the child argv below is byte-identical to what it was, so
     # the ordinary review carries nothing of this.
     # NEVER LAST-WINS ON A DECLARATION. The arity gate this loop replaced happened
-    # to refuse `--mode binding --mode feedback doc.md`; the loop accepted it and
+    # to refuse `--mode advisory --mode feedback doc.md`; the loop accepted it and
     # silently picked a winner, building a child argv carrying one `--mode`. So the
     # Go parser's `duplicate --mode` refusal never saw the duplicate and was lost
     # end to end, and the review ran under an authority the caller never
