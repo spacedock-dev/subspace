@@ -92,6 +92,11 @@ keyboard shortcuts.
 
 ![A comment attached to selected text in Subspace](assets/anchored-feedback.png)
 
+Subspace renders Mermaid diagrams and tables natively in the terminal, not as
+plain fenced code.
+
+![A rendered Mermaid diagram and a rendered table in Subspace](assets/mermaid-and-table.png)
+
 ## License
 
 The Subspace skills are released under Apache 2.0. The `subspace-tui` tool

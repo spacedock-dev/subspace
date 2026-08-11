@@ -142,6 +142,11 @@ result_mode=$(file_mode "$result") || exit 20
 [[ $result_mode == 600 ]] || exit 20
 briefing_hash=$(printf 'subspace:one-file-invocation:v1\0%s' "$result" | shasum -a 256 | awk '{print $1}')
 briefing=briefing:single-file:$(printf '%.32s' "$briefing_hash")
+result_revision=$(jq -er '.artifact.rev | select(type == "string")' "$capture") || exit 20
+if [[ $result_revision != "$revision" ]]; then
+  [[ -f $artifact && ! -L $artifact ]] && current_revision=sha256:$(shasum -a 256 "$artifact" | awk '{print $1}') || exit 20
+  [[ $result_revision == "$current_revision" ]] && revision=$result_revision || exit 20
+fi
 
 jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$briefing" --arg mode "$declared_mode" '
   def exact_keys($want): (keys | sort) == ($want | sort);

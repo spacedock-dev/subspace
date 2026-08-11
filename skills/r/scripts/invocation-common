@@ -116,11 +116,30 @@ invocation_interrupted() {
 invocation_prepare_async() {
   mkfifo "$invocation_fifo" || invocation_preflight_fail 'could not create completion FIFO'
   chmod 600 "$invocation_fifo" || invocation_preflight_fail 'could not make completion FIFO private'
+  local quoted_fifo
+  printf -v quoted_fifo '%q' "$invocation_fifo"
+  # The capsule's own job is launch and stream capture only -- process
+  # supervision (the surface's pty, the completion report, signal handling)
+  # is --invocation-child's, in Go. invocation_command already names that op;
+  # this is a plain exec plus one guard line, reached only if exec itself
+  # never replaced this process (missing/non-executable binary, an
+  # incompatible interpreter) -- a successful exec never returns to run it.
+  # Without it, a caller blocked reading the FIFO would wait forever for a
+  # status --invocation-child was never reached to report. A bare `exec` on
+  # a failed lookup makes a non-interactive shell exit immediately rather
+  # than fall through (verified); `shopt -s execfail` is what makes the
+  # guard line reachable at all -- a bash builtin, so the capsule declares
+  # bash explicitly rather than `#!/bin/sh` (branch_final job 1154: on a
+  # host where /bin/sh is not bash, e.g. dash on Debian/Ubuntu, `shopt` and
+  # this file's `%q`-quoted exec line are not guaranteed to parse the same
+  # way, and a caller blocked on the completion FIFO would wait forever).
   {
-    printf '#!/usr/bin/env bash\nset +e\numask 077\ninvocation_report_status() {\n  child_status=$1\n  trap - EXIT HUP INT TERM\n  printf '\''%%s\\n'\'' "$child_status" > %q\n  exit "$child_status"\n}\ntrap '\''invocation_report_status $?'\'' EXIT\ntrap '\''invocation_report_status 129'\'' HUP\ntrap '\''invocation_report_status 130'\'' INT\ntrap '\''invocation_report_status 143'\'' TERM\ncd -- %q\nchild_status=$?\nif [[ $child_status == 0 ]]; then\n' \
-      "$invocation_fifo" "$invocation_artifact_dir"
-    printf '  %q ' "${invocation_command[@]}"
-    printf '\n  child_status=$?\nfi\nexit "$child_status"\n'
+    printf '#!/usr/bin/env bash\n'
+    printf 'shopt -s execfail 2>/dev/null\n'
+    printf 'exec'
+    printf ' %q' "${invocation_command[@]}"
+    printf '\n'
+    printf '%s\n' "printf '1\n' > $quoted_fifo 2>/dev/null"
   } > "$invocation_capsule" || invocation_preflight_fail 'could not create child capsule'
   chmod 700 "$invocation_capsule" || invocation_preflight_fail 'could not make child capsule private'
 }
@@ -270,7 +289,7 @@ question_transport_require() {
 }
 
 question_leg_arm() {
-  local supplied= mode=feedback budget= question_run poll_args
+  local supplied= mode=feedback budget= launch_args capability_status
   local seen_mode=0
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -299,29 +318,29 @@ question_leg_arm() {
   [[ -n $supplied ]] || invocation_usage
   [[ -z $budget || $budget =~ ^[0-9]+$ ]] ||     question_fail "machine budget must be a whole number of seconds, not '$budget'"
   question_transport_require
-  question_run=$("$question_transport_bin" --question-transport arm     --mode "$mode" --artifact "$supplied") ||     question_fail 'could not arm the question run'
 
-  set -m
-  nohup "$script_dir/review-question-daemon" "$question_run" --grace 3     --transport-bin "$question_transport_bin" --     "$0" --question-run "$question_run" --mode "$mode" "$supplied"     >> "$question_run/daemon.stderr" 2>&1 &
-  disown 2>/dev/null || true
-  set +m
+  # launch is a newer op than review-question-transport-v1, the token
+  # question_transport_require already probed above, so a binary can honor
+  # that older token yet still lack this one. Same skew discipline as
+  # review-invocation-child-v1's site below: probed here, before building
+  # launch_args or exec'ing, so an old binary fails closed with the
+  # established upgrade message instead of a raw Go usage error.
+  set +e
+  "$question_transport_bin" --supports review-question-transport-launch-v1 >/dev/null 2>&1
+  capability_status=$?
+  set -e
+  [[ $capability_status == 0 ]] || \
+    question_fail 'subspace-tui does not support review-question-transport-launch-v1; upgrade spacedock-dev/tap/subspace-beta' 127
 
-  local waited=0 why
-  while [[ ! -s $question_run/daemon.pid ]]; do
-    (( waited += 1 ))
-    if (( waited > 100 )); then
-      why=$(awk 'NF { last = $0 } END { print last }' "$question_run/daemon.stderr" 2>/dev/null)
-      [[ -n $why ]] || why='it published no pid and said nothing'
-      question_fail "the supervising daemon did not start: $why; retained run: $question_run"
-    fi
-    sleep 0.1
-  done
-
-  poll_args=(--question-transport poll --run "$question_run")
+  # Arming, detaching the daemon, and waiting for its readiness are now one
+  # Go-owned op: internal/questiontransport.Launch. This adapter's own job
+  # stays launch and stream capture -- it names the daemon script and this
+  # entry, nothing more.
+  launch_args=(--question-transport launch --daemon "$script_dir/review-question-daemon"     --entry "$0" --mode "$mode" --artifact "$supplied")
   if [[ -n $budget ]]; then
-    poll_args+=(--machine-budget "$budget")
+    launch_args+=(--machine-budget "$budget")
   fi
-  exec "$question_transport_bin" "${poll_args[@]}"
+  exec "$question_transport_bin" "${launch_args[@]}"
 }
 
 question_leg_poll() {
@@ -445,6 +464,18 @@ invocation_main() {
   fi
   [[ -f $script_dir/validate-one-file-result && -x $script_dir/validate-one-file-result ]] || \
     invocation_preflight_fail 'canonical result validator is unavailable'
+  # Either profile dispatches through --invocation-child when async. Probed
+  # here, before any host probe or launch, same skew discipline as
+  # review-question-transport-v1. Sync never reaches the new op, so this is
+  # deliberately narrower than "one-file || async": it is async-only.
+  if [[ ${invocation_async:-0} == 1 ]]; then
+    set +e
+    "$invocation_tui" --supports review-invocation-child-v1 >/dev/null 2>&1
+    capability_status=$?
+    set -e
+    [[ $capability_status == 0 ]] || \
+      invocation_preflight_fail 'subspace-tui does not support review-invocation-child-v1; upgrade spacedock-dev/tap/subspace-beta'
+  fi
 
   invocation_host_preflight
 
@@ -471,13 +502,24 @@ invocation_main() {
       invocation_child+=(--question-run "$invocation_question_run")
     fi
     invocation_child+=("$invocation_artifact")
-    invocation_command=("${invocation_child[@]}")
+    if [[ ${invocation_async:-0} == 1 ]]; then
+      invocation_command=("$invocation_tui" --invocation-child \
+        --status-fifo "$invocation_fifo" --cwd "$invocation_artifact_dir" -- "${invocation_child[@]}")
+    else
+      invocation_command=("${invocation_child[@]}")
+    fi
   else
     invocation_child=("$invocation_tui" --review-v1 --actor "$invocation_actor" --mode "$invocation_mode" \
       --provider-package "$invocation_dir" "$invocation_artifact")
-    invocation_command=("$invocation_tui" --provider-supervise \
+    invocation_supervised=("$invocation_tui" --provider-supervise \
       --child-exit "$invocation_child_exit" --stderr "$invocation_stderr" \
       --argv "$invocation_argv" -- "${invocation_child[@]}")
+    if [[ ${invocation_async:-0} == 1 ]]; then
+      invocation_command=("$invocation_tui" --invocation-child \
+        --status-fifo "$invocation_fifo" --cwd "$invocation_artifact_dir" -- "${invocation_supervised[@]}")
+    else
+      invocation_command=("${invocation_supervised[@]}")
+    fi
   fi
   [[ ! -e $invocation_result && ! -L $invocation_result ]] || invocation_preflight_fail 'result path already exists'
   if [[ ${invocation_async:-0} == 1 ]]; then
