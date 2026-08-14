@@ -33,7 +33,7 @@ Classify in this order, stopping at the first reason that matches:
    matches this host, resolved through the canonical latest-release URL
    `http://spacedock.md/latest-release/subspace` — the direct-binary command
    in step 3. This is not the capability refusal: a binary that executes but
-   answers the `--supports review-v1-resolution-mode-v1` probe nonzero is too
+   answers the `--supports review-invocation-prepare-v1` probe nonzero is too
    old, keeps its `does not support … upgrade` message, and its remedy is an
    upgrade, not a reinstall.
 

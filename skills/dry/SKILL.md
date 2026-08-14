@@ -51,14 +51,29 @@ Follow `../r/SKILL.md`'s *Select one terminal* and *Permission and
 invocation* sections exactly as written, with one substitution: invoke
 
 ```text
-review-<selected-terminal> --allow-question <scratch>/dry-status.md
+SUBSPACE_DRY=1 review-<selected-terminal> --allow-question <scratch>/dry-status.md
 ```
 
-the plain one-file arming form, with no `--mode` and no `--placement`. This is
-byte-identical to arming any other one-file review through the `r` skill; the
-selected entry, the shared lifecycle, and the run directory it mints have no
-awareness that the Artifact is a placeholder rather than a document someone
-asked to review.
+the plain one-file arming form, with no `--mode` and no `--placement`, plus
+the `SUBSPACE_DRY=1` shell environment prefix -- a plain assignment on the
+command line, not an entry argument. That prefix is the one thing that is
+not byte-identical to arming any other one-file review through the `r`
+skill: it is `dry`'s explicit signal that this Artifact is its own
+placeholder, threaded through the shared lifecycle (`buildInvocationCommand`)
+into the launched review's environment so it opens on the question rail
+instead of the placeholder document. It controls startup presentation only
+-- not authority, Resolution, or the portable record. Do not drop it: the
+selected entry and the run directory it mints have no other way to
+distinguish this Artifact from a document someone asked to review.
+
+Some agent harnesses match Bash-tool permission rules against the literal
+invoked command's prefix. Because this line prepends `SUBSPACE_DRY=1` to
+the entry invocation, an allow-list rule scoped to the bare
+`review-<terminal>` command no longer matches, and the harness may ask
+for approval it would not otherwise ask for. This is a known, accepted
+cost of the explicit-signal design — not a bug to fix here. A captain who
+wants to suppress it can add a local allow-list rule covering the
+`SUBSPACE_DRY=1`-prefixed form.
 
 ## Poll, answer, and report
 

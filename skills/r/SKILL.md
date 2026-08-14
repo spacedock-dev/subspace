@@ -51,22 +51,23 @@ spelling, parent permissions, and Unix mode are not Review v1 preconditions.
 The canonical loader establishes that the content is a valid Briefing.
 
 The selected fixed entry owns path resolution, revision pinning, exact
-`subspace-tui` resolution, the literal
-`review-v1-provider-package-v1` and `review-v1-resolution-mode-v1` capability
-checks, allocation of one fresh
+`subspace-tui` resolution, the single literal
+`review-invocation-prepare-v1` capability check, allocation of one fresh
 retained provider package, host preflight, launch, delivery, canonical
 validation, and cleanup. The caller never chooses Result, log, inventory,
 diagnostics, staging, title, or mode mechanics. Do not duplicate those checks
 with model-authored shell commands.
 
-Both journeys probe `review-v1-resolution-mode-v1` and refuse to launch against
-a binary that cannot carry a declared mode. No exact release label is consulted
-for either journey.
+Both journeys probe `review-invocation-prepare-v1` once, before any host
+preflight, and refuse to launch against a binary that does not carry it. One
+token stands for the whole lifecycle. No exact release label is consulted for
+either journey.
 
 ## Select one terminal
 
 An explicit terminal wins. Otherwise inspect inherited caller signals without
-running a command and select the first family present in this fixed order:
+running a command — except the one Codex-only detector defined below — and
+select the first family present in this fixed order:
 Zellij, tmux, Herdr, CMUX, Ghostty, then Apple Terminal.
 
 1. Zellij signals are `ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID`.
@@ -81,7 +82,57 @@ and specified values. A partial family stops with the missing signal; it never
 falls through. Complete signals select a terminal but do not prove its host is
 healthy. A missing binary, unavailable operation, ambiguous caller, inaccessible
 server, malformed probe, or broken selected host also stops without trying a
-later terminal. If no family is present and the operating system is macOS,
+later terminal.
+
+Codex alone may take one further step before that no-family default. A
+signal name counts as appearing only under the same test used above: a
+non-empty value for one of the eight identifiers, or a `TERM_PROGRAM` of
+exactly `ghostty` or `Apple_Terminal`. An empty value or an unrecognized
+`TERM_PROGRAM` value does not count as appearing. When none of the nine
+appear by that test in Codex's runtime-visible context, it may issue exactly
+one read-only command that reports only those fixed names.
+
+```sh
+/bin/sh -c '
+[ -n "${ZELLIJ_SESSION_NAME:-}" ] && printf "ZELLIJ_SESSION_NAME=present\n" || printf "ZELLIJ_SESSION_NAME=absent\n"
+[ -n "${ZELLIJ_PANE_ID:-}" ] && printf "ZELLIJ_PANE_ID=present\n" || printf "ZELLIJ_PANE_ID=absent\n"
+[ -n "${TMUX:-}" ] && printf "TMUX=present\n" || printf "TMUX=absent\n"
+[ -n "${TMUX_PANE:-}" ] && printf "TMUX_PANE=present\n" || printf "TMUX_PANE=absent\n"
+if [ -z "${HERDR_ENV:-}" ]; then printf "HERDR_ENV=absent\n"; elif [ "$HERDR_ENV" = 1 ]; then printf "HERDR_ENV=1\n"; else printf "HERDR_ENV=other\n"; fi
+[ -n "${HERDR_PANE_ID:-}" ] && printf "HERDR_PANE_ID=present\n" || printf "HERDR_PANE_ID=absent\n"
+[ -n "${CMUX_WORKSPACE_ID:-}" ] && printf "CMUX_WORKSPACE_ID=present\n" || printf "CMUX_WORKSPACE_ID=absent\n"
+[ -n "${CMUX_SURFACE_ID:-}" ] && printf "CMUX_SURFACE_ID=present\n" || printf "CMUX_SURFACE_ID=absent\n"
+if [ -z "${TERM_PROGRAM:-}" ]; then printf "TERM_PROGRAM=absent\n"; elif [ "$TERM_PROGRAM" = ghostty ]; then printf "TERM_PROGRAM=ghostty\n"; elif [ "$TERM_PROGRAM" = Apple_Terminal ]; then printf "TERM_PROGRAM=Apple_Terminal\n"; else printf "TERM_PROGRAM=other\n"; fi
+'
+```
+
+The output is exactly nine LF-terminated ASCII lines in the shown order and
+no stderr: the seven identifier names accept only `present|absent`,
+`HERDR_ENV` accepts only `1|other|absent`, and `TERM_PROGRAM` accepts only
+`ghostty|Apple_Terminal|other|absent`. Empty values normalize to `absent`;
+`other` discloses only that a fixed value did not match. Herdr's family is
+present once either of its two listed signals is set, so `HERDR_ENV=other`
+is a present-but-invalid Herdr signal when Herdr is the first family
+reached. Ghostty and Apple Terminal are each a single exact-value signal
+(`TERM_PROGRAM=ghostty` and `TERM_PROGRAM=Apple_Terminal`), so
+`TERM_PROGRAM=other` matches neither and — like `TERM_PROGRAM=absent` — is
+treated as no signal for either family; it never stops the invocation on its
+own. No raw environment value, unrelated name, OS fact, path, or shell state
+can enter output. Claude and every other runtime never issue this command
+and keep inspecting runtime-visible context directly.
+
+Codex then applies the family rule above to this normalized map exactly
+once: a complete family selects that terminal; a partial or invalid family
+stops with the missing or invalid signal, never falling through to a later
+family; when no family matches — nine `absent` statuses, or eight `absent`
+statuses with `TERM_PROGRAM=other` — fall through to the no-family default
+below. Any tool refusal, nonzero status, stderr, or output outside this
+closed grammar also stops before selection or launch and names the failed
+detector boundary — never a looser command, `env`, `printenv`, retry,
+fallback, or explicit-host inference — and the command runs at most once
+per invocation.
+
+If no family is present and the operating system is macOS,
 select Apple Terminal and invoke
 `review-apple-terminal [--mode <feedback|advisory|binding>] <file.md>` exactly once. On other
 operating systems, report the supported names and ask for an explicit terminal.
@@ -216,8 +267,27 @@ that PID, and atomically records its exit. `--provider-package` is private
 Subspace wiring, never caller grammar. Result publication, pane creation, and
 launcher return never authorize validation or delivery. The common lifecycle
 calls the canonical validator once only after an exit-zero child. It retains
-the unchanged Result, log, presented inventory, argv, child exit, stderr,
-capability evidence, and diagnostics together on success and failure.
+the unchanged Result, log, presented inventory, argv, child exit, stderr, and
+diagnostics together on success and failure.
+
+A capability refusal is reported, not filed. The single
+`review-invocation-prepare-v1` probe runs once before any host preflight and
+its outcome reaches the caller as the named `does not support … upgrade`
+message on stderr, with the package retained and `diagnostics/inputs.nul`
+recording what was asked for. Per-probe `capability.stdout`, `capability.exit`
+and `mode-capability.*` files are not written: five scattered probes each
+filing evidence became one probe whose refusal is already loud and named.
+
+Two files under `diagnostics/` carry the invocation's own identity, and both
+are retained with the package. `invocation-state.json` is one JSON record
+written by `--invocation-prepare` and read back by `--invocation-finish` and
+`--invocation-cleanup`; it names the profile, the resolved Artifact and its
+pinned revision, the actor, the mode, and every package path the later legs
+use. It carries the state the retired `inputs.nul` stamp used to. `inputs.nul`
+itself remains as a plain record of what was asked for: the entry name
+followed by the verbatim entry argv, NUL-delimited. It is written before
+`subspace-tui` is resolved, so a presenter that is missing or too old still
+leaves a package that says what was requested.
 
 Dispatch is irreversible. Never retry, fall back, relaunch, open another
 terminal, or invoke the binary or entry again after the first host-changing

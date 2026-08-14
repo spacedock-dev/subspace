@@ -2,9 +2,16 @@
 
 # Private lifecycle sourced by each fixed review-* entry. Host selection and
 # host commands stay in the entry; result interpretation stays in the one
-# canonical validator executable.
+# canonical validator executable. Everything between them -- profile grammar,
+# Artifact pinning, scratch population, child argv, completion detection,
+# result capture -- belongs to subspace-tui, behind --invocation-prepare,
+# --invocation-finish and --invocation-cleanup. What is left here must run in
+# the calling shell's own process: the trap spanning host dispatch, the
+# scratch allocated before a Go process exists to own it, and the CLI grammar
+# the six fixed entries share.
 
 invocation_usage() {
+  invocation_discard_scratch
   printf 'usage: review-%s [--mode MODE] <file.md>\n' "$invocation_name" >&2
   printf '   or: review-%s --allow-question [--mode MODE] <file.md>\n' "$invocation_name" >&2
   printf '   or: review-%s --answer-question [--run DIR] --for-question ID --text-file FILE\n' "$invocation_name" >&2
@@ -13,61 +20,42 @@ invocation_usage() {
   printf '   or: review-%s --review-v1 --actor ID --mode MODE <briefing-file>\n' "$invocation_name" >&2
   exit 2
 }
-invocation_path_mode() {
-  local mode
-  if mode=$(stat -f '%Lp' "$1" 2>/dev/null); then
-    printf '%s\n' "$mode"
-    return 0
-  fi
-  stat -c '%a' "$1" 2>/dev/null
+
+# A one-file scratch is discarded whole when the lifecycle refuses before
+# dispatch: nothing is published into it yet, and the guard keeps a published
+# result out of the blast radius. A provider package is never discarded.
+invocation_discard_scratch() {
+  [[ ${invocation_created:-0} == 1 && ${invocation_profile:-one-file} == one-file ]] || return 0
+  [[ ! -e ${invocation_result:-} && ! -L ${invocation_result:-} ]] || return 0
+  rm -rf -- "$invocation_dir" 2>/dev/null || true
 }
 
-invocation_canonical_file() {
-  local path=$1 parent target count=0
-  while [[ -L $path ]]; do
-    (( count += 1 ))
-    (( count <= 40 )) || return 1
-    target=$(readlink "$path") || return 1
-    if [[ $target == /* ]]; then
-      path=$target
-    else
-      parent=${path%/*}
-      [[ $path == */* ]] || parent=.
-      [[ -n $parent ]] || parent=/
-      path=$parent/$target
-    fi
-  done
-  parent=${path%/*}
-  if [[ $path != */* ]]; then
-    parent=.
-  elif [[ -z $parent ]]; then
-    parent=/
-  fi
-  parent=$(CDPATH= cd -P -- "$parent" && pwd -P) || return 1
-  if [[ $parent == / ]]; then
-    printf '/%s\n' "${path##*/}"
+invocation_preflight_fail() {
+  invocation_discard_scratch
+  if [[ ${invocation_profile:-one-file} == explicit-briefing && ${invocation_created:-0} == 1 ]]; then
+    printf 'review-%s: %s; retained provider package: %s\n' \
+      "$invocation_name" "$1" "$invocation_dir" >&2
   else
-    printf '%s/%s\n' "$parent" "${path##*/}"
+    printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
   fi
+  exit "${2:-2}"
 }
 
-invocation_remove_empty() {
-  [[ ${invocation_profile:-one-file} == one-file ]] || return 0
-  [[ ${invocation_created:-0} == 1 ]] || return 0
-  rm -f -- "$invocation_fifo" "$invocation_capsule" "$invocation_capture" \
-    "$invocation_trusted" 2>/dev/null || true
-  [[ ! -e $invocation_result && ! -L $invocation_result ]] || return 0
-  rmdir -- "$invocation_dir" 2>/dev/null || true
+invocation_preserve_fail() {
+  printf 'review-%s: %s; recoverable scratch: %s%s\n' \
+    "$invocation_name" "$1" "$invocation_dir" "${invocation_residue:-}" >&2
+  exit "${2:-1}"
 }
 
-invocation_note_failure() {
-  local reason=$1 status=${2:-1}
-  if [[ -z ${invocation_failure_reason:-} ]]; then
-    invocation_failure_reason=$reason
-    invocation_failure_status=$status
-  else
-    invocation_failure_reason="${invocation_failure_reason}; $reason"
+invocation_interrupted() {
+  # Before dispatch this is a preflight refusal in every respect that matters,
+  # so it reuses that path, which also names a retained provider package.
+  if [[ ${invocation_dispatched:-0} == 0 ]]; then
+    invocation_preflight_fail 'interrupted before launch' 130
   fi
+  printf 'review-%s: interrupted; recoverable scratch: %s%s\n' \
+    "$invocation_name" "$invocation_dir" "${invocation_residue:-}" >&2
+  exit 130
 }
 
 invocation_note_host_failure() {
@@ -78,194 +66,6 @@ invocation_note_host_failure() {
   else
     invocation_host_failure_reason="${invocation_host_failure_reason}; $reason"
   fi
-}
-
-invocation_preflight_fail() {
-  invocation_remove_empty
-  if [[ ${invocation_profile:-one-file} == explicit-briefing &&
-    ${invocation_created:-0} == 1 ]]; then
-    printf 'review-%s: %s; retained provider package: %s\n' \
-      "$invocation_name" "$1" "$invocation_dir" >&2
-  else
-    printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
-  fi
-  exit "${2:-2}"
-}
-
-invocation_preserve_fail() {
-  if [[ ${invocation_defer_failures:-0} == 1 ]]; then
-    invocation_note_failure "$1" "${2:-1}"
-    return 0
-  fi
-  printf 'review-%s: %s; recoverable scratch: %s%s\n' \
-    "$invocation_name" "$1" "$invocation_dir" "${invocation_residue:-}" >&2
-  exit "${2:-1}"
-}
-
-invocation_interrupted() {
-  if [[ ${invocation_dispatched:-0} == 0 ]]; then
-    invocation_remove_empty
-    printf 'review-%s: interrupted before launch\n' "$invocation_name" >&2
-  else
-    printf 'review-%s: interrupted; recoverable scratch: %s%s\n' \
-      "$invocation_name" "$invocation_dir" "${invocation_residue:-}" >&2
-  fi
-  exit 130
-}
-
-invocation_prepare_async() {
-  mkfifo "$invocation_fifo" || invocation_preflight_fail 'could not create completion FIFO'
-  chmod 600 "$invocation_fifo" || invocation_preflight_fail 'could not make completion FIFO private'
-  local quoted_fifo
-  printf -v quoted_fifo '%q' "$invocation_fifo"
-  # The capsule's own job is launch and stream capture only -- process
-  # supervision (the surface's pty, the completion report, signal handling)
-  # is --invocation-child's, in Go. invocation_command already names that op;
-  # this is a plain exec plus one guard line, reached only if exec itself
-  # never replaced this process (missing/non-executable binary, an
-  # incompatible interpreter) -- a successful exec never returns to run it.
-  # Without it, a caller blocked reading the FIFO would wait forever for a
-  # status --invocation-child was never reached to report. A bare `exec` on
-  # a failed lookup makes a non-interactive shell exit immediately rather
-  # than fall through (verified); `shopt -s execfail` is what makes the
-  # guard line reachable at all -- a bash builtin, so the capsule declares
-  # bash explicitly rather than `#!/bin/sh` (branch_final job 1154: on a
-  # host where /bin/sh is not bash, e.g. dash on Debian/Ubuntu, `shopt` and
-  # this file's `%q`-quoted exec line are not guaranteed to parse the same
-  # way, and a caller blocked on the completion FIFO would wait forever).
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf 'shopt -s execfail 2>/dev/null\n'
-    printf 'exec'
-    printf ' %q' "${invocation_command[@]}"
-    printf '\n'
-    printf '%s\n' "printf '1\n' > $quoted_fifo 2>/dev/null"
-  } > "$invocation_capsule" || invocation_preflight_fail 'could not create child capsule'
-  chmod 700 "$invocation_capsule" || invocation_preflight_fail 'could not make child capsule private'
-}
-
-invocation_prepare_artifact() {
-  local supplied=$1
-  [[ $invocation_profile == one-file || ! -L $supplied ]] || \
-    invocation_preflight_fail "Artifact is not a readable regular file: $supplied"
-  invocation_artifact=$(invocation_canonical_file "$supplied") || \
-    invocation_preflight_fail 'could not canonicalize the Artifact path'
-  [[ -f $invocation_artifact && -r $invocation_artifact ]] || \
-    invocation_preflight_fail "Artifact is not a readable regular file: $supplied"
-  invocation_artifact_dir=${invocation_artifact%/*}
-  [[ -n $invocation_artifact_dir ]] || invocation_artifact_dir=/
-  [[ -d $invocation_artifact_dir && -x $invocation_artifact_dir ]] || \
-    invocation_preflight_fail "Artifact parent is not searchable: $invocation_artifact_dir"
-  invocation_revision=$(shasum -a 256 "$invocation_artifact" 2>/dev/null) || \
-    invocation_preflight_fail 'could not pin the Artifact revision'
-  invocation_revision=sha256:${invocation_revision%% *}
-  [[ $invocation_revision =~ ^sha256:[0-9a-f]{64}$ ]] || \
-    invocation_preflight_fail 'Artifact revision is malformed'
-}
-
-invocation_validate_mode() {
-  [[ -n ${1//[[:space:]]/} ]] || invocation_preflight_fail 'mode must be non-empty'
-}
-
-invocation_prepare_provider() {
-  [[ $# == 6 && $1 == --review-v1 && $2 == --actor && $4 == --mode ]] || invocation_usage
-  invocation_profile=explicit-briefing
-  invocation_actor=$3
-  invocation_mode=$5
-  [[ -n ${invocation_actor//[[:space:]]/} ]] || \
-    invocation_preflight_fail 'actor must be non-empty'
-  invocation_validate_mode "$invocation_mode"
-  invocation_prepare_artifact "$6"
-  local scratch
-  umask 077
-  scratch=$(mktemp -d "${TMPDIR:-/tmp}/subspace-r-provider.XXXXXX") || \
-    invocation_preflight_fail 'could not allocate provider package'
-  invocation_dir=$(CDPATH= cd -- "$scratch" && pwd -P) || {
-    rmdir -- "$scratch" 2>/dev/null || true
-    invocation_preflight_fail 'could not resolve provider package'
-  }
-  invocation_created=1
-  invocation_result=$invocation_dir/result.json
-  invocation_log=$invocation_dir/review.jsonl
-  invocation_inventory=$invocation_dir/presented-inventory.json
-  invocation_diagnostics=$invocation_dir/diagnostics
-  mkdir -- "$invocation_diagnostics" || invocation_preflight_fail 'could not create provider diagnostics'
-  invocation_capture=$invocation_diagnostics/result-capture.json
-  invocation_trusted=$invocation_diagnostics/trusted-result.json
-  invocation_fifo=$invocation_diagnostics/invocation-status.fifo
-  invocation_capsule=$invocation_diagnostics/invocation-child
-  invocation_child_exit=$invocation_diagnostics/child-exit.json
-  invocation_stderr=$invocation_diagnostics/stderr
-  invocation_argv=$invocation_diagnostics/argv.json
-  printf '%s\0' "$invocation_name" "$invocation_actor" "$invocation_mode" \
-    "$invocation_artifact" "$invocation_dir" > "$invocation_diagnostics/inputs.nul" || \
-    invocation_preflight_fail 'could not stamp provider inputs'
-}
-
-invocation_receive_async() {
-  local child_status
-  if ! IFS= read -r child_status < "$invocation_fifo"; then
-    invocation_preserve_fail 'completion FIFO closed without a status'
-    return 0
-  fi
-  if ! [[ $child_status =~ ^[0-9]+$ && $child_status -le 255 ]]; then
-    invocation_preserve_fail 'completion status is malformed'
-    return 0
-  fi
-  if [[ $child_status != 0 ]]; then
-    invocation_preserve_fail "Subspace exited with status $child_status" "$child_status"
-    return 0
-  fi
-}
-
-invocation_receive_provider_sync() {
-  local child_record child_status
-  if ! [[ -f $invocation_child_exit && ! -L $invocation_child_exit ]]; then
-    invocation_preserve_fail 'terminal returned without child-exit evidence'
-    return 0
-  fi
-  child_record=$(<"$invocation_child_exit")
-  if ! [[ $child_record =~ ^\{\"exit\":([0-9]+),\"argvSha256\":\"sha256:[0-9a-f]{64}\"\}$ ]]; then
-    invocation_preserve_fail 'completion status is malformed'
-    return 0
-  fi
-  child_status=${BASH_REMATCH[1]}
-  if ! (( child_status <= 255 )); then
-    invocation_preserve_fail 'completion status is malformed'
-    return 0
-  fi
-  if [[ $child_status != 0 ]]; then
-    invocation_preserve_fail "Subspace exited with status $child_status" "$child_status"
-    return 0
-  fi
-}
-
-invocation_wait_for_result() {
-  local count
-  for ((count = 0; count < 250; count += 1)); do
-    if [[ -e $invocation_result || -L $invocation_result ]]; then
-      return 0
-    fi
-    sleep 0.02
-  done
-  invocation_preserve_fail 'terminal returned before publishing a result'
-  return 0
-}
-
-# ---------------------------------------------------------------------------
-# The question journey.
-#
-# The private Go command owns run identity, FIFO selection, claims, expiry,
-# and lifecycle observations. This sourced file only validates the public
-# dispatch shape, finds the exact binary, launches the daemon, and forwards
-# the resulting packet.
-# ---------------------------------------------------------------------------
-
-question_transport_bin=
-
-question_fail() {
-  printf 'review-%s: %s\n' "$invocation_name" "$1" >&2
-  exit "${2:-2}"
 }
 
 # SUBSPACE_TUI_BIN is a caller-private override, not skill grammar: when set,
@@ -279,23 +79,46 @@ invocation_resolve_tui_bin() {
   fi
 }
 
-question_transport_require() {
-  local found
-  found=$(invocation_resolve_tui_bin) ||     question_fail 'subspace-tui is unavailable; read skills/r/references/subspace-tui-unavailable.md' 127
-  [[ $found == /* ]] || question_fail 'subspace-tui did not resolve to an absolute path'
-  question_transport_bin=$(invocation_canonical_file "$found") ||     question_fail 'could not resolve the exact subspace-tui target'
-  [[ -f $question_transport_bin && ! -L $question_transport_bin && -x $question_transport_bin ]] ||     question_fail 'subspace-tui target is not an executable regular file'
-  "$question_transport_bin" --supports review-question-transport-v1 >/dev/null 2>&1 ||     question_fail 'subspace-tui does not support review-question-transport-v1; upgrade spacedock-dev/tap/subspace-beta' 127
+# One token stands for the whole lifecycle and is probed once, before any host
+# preflight and before any one-file scratch exists. The five scattered probes
+# this replaces only multiplied the ways a stale binary could get part-way in
+# before failing.
+invocation_require_tui() {
+  local found status
+  found=$(invocation_resolve_tui_bin) || \
+    invocation_preflight_fail 'subspace-tui is unavailable; read skills/r/references/subspace-tui-unavailable.md' 127
+  [[ $found == /* ]] || invocation_preflight_fail 'subspace-tui did not resolve to an absolute path'
+  [[ -f $found && -x $found ]] || \
+    invocation_preflight_fail 'subspace-tui target is not an executable regular file'
+  invocation_tui=$found
+  set +e
+  "$invocation_tui" --supports review-invocation-prepare-v1 >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ $status == 0 ]] || invocation_preflight_fail \
+    'subspace-tui does not support review-invocation-prepare-v1; upgrade spacedock-dev/tap/subspace-beta' 127
+}
+
+# ---------------------------------------------------------------------------
+# The question journey. The private Go command owns run identity, FIFO
+# selection, claims, expiry and lifecycle observations. This file only
+# validates the public dispatch shape and forwards the packet.
+# ---------------------------------------------------------------------------
+
+question_leg() {
+  local verb=$1
+  shift
+  invocation_require_tui
+  exec "$invocation_tui" --question-transport "$verb" "$@"
 }
 
 question_leg_arm() {
-  local supplied= mode=feedback budget= launch_args capability_status
-  local seen_mode=0
+  local supplied= mode=feedback budget= launch_args seen_mode=0
   while [[ $# -gt 0 ]]; do
     case $1 in
       --mode)
         [[ $# -ge 2 ]] || invocation_usage
-        [[ $seen_mode == 0 ]] || question_fail 'duplicate --mode'
+        [[ $seen_mode == 0 ]] || invocation_preflight_fail 'duplicate --mode'
         seen_mode=1
         mode=$2
         shift 2
@@ -305,9 +128,7 @@ question_leg_arm() {
         budget=$2
         shift 2
         ;;
-      -*)
-        invocation_usage
-        ;;
+      -*) invocation_usage ;;
       *)
         [[ -z $supplied ]] || invocation_usage
         supplied=$1
@@ -316,46 +137,44 @@ question_leg_arm() {
     esac
   done
   [[ -n $supplied ]] || invocation_usage
-  [[ -z $budget || $budget =~ ^[0-9]+$ ]] ||     question_fail "machine budget must be a whole number of seconds, not '$budget'"
-  question_transport_require
-
-  # launch is a newer op than review-question-transport-v1, the token
-  # question_transport_require already probed above, so a binary can honor
-  # that older token yet still lack this one. Same skew discipline as
-  # review-invocation-child-v1's site below: probed here, before building
-  # launch_args or exec'ing, so an old binary fails closed with the
-  # established upgrade message instead of a raw Go usage error.
-  set +e
-  "$question_transport_bin" --supports review-question-transport-launch-v1 >/dev/null 2>&1
-  capability_status=$?
-  set -e
-  [[ $capability_status == 0 ]] || \
-    question_fail 'subspace-tui does not support review-question-transport-launch-v1; upgrade spacedock-dev/tap/subspace-beta' 127
-
-  # Arming, detaching the daemon, and waiting for its readiness are now one
-  # Go-owned op: internal/questiontransport.Launch. This adapter's own job
-  # stays launch and stream capture -- it names the daemon script and this
-  # entry, nothing more.
-  launch_args=(--question-transport launch --daemon "$script_dir/review-question-daemon"     --entry "$0" --mode "$mode" --artifact "$supplied")
+  [[ -z $budget || $budget =~ ^[0-9]+$ ]] || \
+    invocation_preflight_fail "machine budget must be a whole number of seconds, not '$budget'"
+  invocation_require_tui
+  # Arming, detaching the daemon and waiting for its readiness are one
+  # Go-owned op: internal/questiontransport.Launch. This adapter names the
+  # daemon script and this entry, nothing more.
+  launch_args=(--question-transport launch --daemon "$script_dir/review-question-daemon" \
+    --entry "$0" --mode "$mode" --artifact "$supplied")
   if [[ -n $budget ]]; then
     launch_args+=(--machine-budget "$budget")
   fi
-  exec "$question_transport_bin" "${launch_args[@]}"
+  exec "$invocation_tui" "${launch_args[@]}"
 }
 
-question_leg_poll() {
-  question_transport_require
-  exec "$question_transport_bin" --question-transport poll "$@"
+# --invocation-prepare reports back through NUL records: state path, reason
+# path, artifact directory, capsule, then the child argv the entries read.
+invocation_read_prepared() {
+  local record prepared=()
+  # An unreadable report leaves prepared empty for the check below to refuse.
+  while IFS= read -r -d '' record; do
+    prepared+=("$record")
+  done < "$1" 2>/dev/null || true
+  [[ ${#prepared[@]} -ge 5 ]] || invocation_preflight_fail 'invocation preparation reported nothing usable'
+  invocation_state=${prepared[0]}
+  invocation_reason_file=${prepared[1]}
+  invocation_artifact_dir=${prepared[2]}
+  invocation_capsule=${prepared[3]}
+  invocation_command=("${prepared[@]:4}")
 }
 
-question_leg_answer() {
-  question_transport_require
-  exec "$question_transport_bin" --question-transport answer "$@"
-}
-
-question_leg_decline() {
-  question_transport_require
-  exec "$question_transport_bin" --question-transport decline "$@"
+invocation_allocate_scratch() {
+  local scratch
+  scratch=$(mktemp -d "$1") || invocation_preflight_fail "$2"
+  invocation_dir=$(CDPATH= cd -- "$scratch" && pwd -P) || {
+    rmdir -- "$scratch" 2>/dev/null || true
+    invocation_preflight_fail "$3"
+  }
+  invocation_created=1
 }
 
 invocation_main() {
@@ -364,269 +183,117 @@ invocation_main() {
   # dispatched before any host preflight and need no host.
   case ${1:-} in
     --allow-question) shift; question_leg_arm "$@"; return 0 ;;
-    --answer-question) shift; question_leg_answer "$@"; return 0 ;;
-    --poll-question) shift; question_leg_poll "$@"; return 0 ;;
-    --decline-question) shift; question_leg_decline "$@"; return 0 ;;
+    --answer-question) shift; question_leg answer "$@"; return 0 ;;
+    --poll-question) shift; question_leg poll "$@"; return 0 ;;
+    --decline-question) shift; question_leg decline "$@"; return 0 ;;
   esac
-  local supplied found capability_status revision_status dispatch_status scratch
-  local host_status result_present
+
+  local prepare_args dispatch_status host_status reason status prepared_out
   invocation_created=0
   invocation_dispatched=0
   invocation_residue=
-  invocation_failure_reason=
-  invocation_failure_status=1
-  invocation_defer_failures=0
+  invocation_result=
   invocation_host_failure_reason=
   invocation_host_failure_status=0
   invocation_profile=one-file
-  invocation_question_run=
+  # Armed before any allocation: an interrupt before dispatch discards its scratch.
+  trap invocation_interrupted HUP INT TERM
+
+  umask 077
   if [[ ${1:-} == --review-v1 ]]; then
-    invocation_prepare_provider "$@"
-    supplied=$6
-  else
-    # No declaration is the feedback floor, not an inferred authority.
-    invocation_mode=feedback
-    # UNADVERTISED. --question-run is private wiring for the one-question
-    # journey and is absent from the usage text on purpose. With no
-    # --question-run the child argv below is byte-identical to what it was, so
-    # the ordinary review carries nothing of this.
-    # NEVER LAST-WINS ON A DECLARATION. The arity gate this loop replaced happened
-    # to refuse `--mode advisory --mode feedback doc.md`; the loop accepted it and
-    # silently picked a winner, building a child argv carrying one `--mode`. So the
-    # Go parser's `duplicate --mode` refusal never saw the duplicate and was lost
-    # end to end, and the review ran under an authority the caller never
-    # unambiguously declared. Each flag is seen once, matching parseOneFileArgs.
-    local seen_mode=0 seen_question_run=0
-    while [[ $# -gt 1 ]]; do
-      case $1 in
-        --mode)
-          [[ $# -ge 2 ]] || invocation_usage
-          [[ $seen_mode == 0 ]] || invocation_preflight_fail 'duplicate --mode'
-          seen_mode=1
-          invocation_mode=$2
-          shift 2
-          ;;
-        --question-run)
-          [[ $# -ge 2 ]] || invocation_usage
-          [[ $seen_question_run == 0 ]] || invocation_preflight_fail 'duplicate --question-run'
-          seen_question_run=1
-          invocation_question_run=$2
-          shift 2
-          ;;
-        *) invocation_usage ;;
-      esac
-    done
-    [[ $# == 1 ]] || invocation_usage
-    supplied=$1
-    invocation_validate_mode "$invocation_mode"
-    if [[ -n $invocation_question_run ]]; then
-      [[ -d $invocation_question_run ]] || \
-        invocation_preflight_fail 'question run directory does not exist'
-    fi
-    invocation_prepare_artifact "$supplied"
+    invocation_profile=explicit-briefing
+    # The package exists before the binary is resolved, so a provider gets its
+    # diagnostic package back even when the presenter is missing or too old.
+    # That puts allocation ahead of --invocation-prepare's grammar check, so
+    # the gate deciding whether to allocate at all belongs here: an invocation
+    # that was never well-formed must not leave a package behind.
+    [[ $# == 6 && $2 == --actor && $4 == --mode ]] || invocation_usage
+    invocation_allocate_scratch "${TMPDIR:-/tmp}/subspace-r-provider.XXXXXX" \
+      'could not allocate provider package' 'could not resolve provider package'
+    mkdir -- "$invocation_dir/diagnostics" || \
+      invocation_preflight_fail 'could not create provider diagnostics'
+    printf '%s\0' "$invocation_name" "$@" > "$invocation_dir/diagnostics/inputs.nul" || \
+      invocation_preflight_fail 'could not stamp provider inputs'
   fi
 
-  found=$(invocation_resolve_tui_bin) || \
-    invocation_preflight_fail 'subspace-tui is unavailable; read skills/r/references/subspace-tui-unavailable.md' 127
-  [[ $found == /* ]] || invocation_preflight_fail 'subspace-tui did not resolve to an absolute path'
-  invocation_tui=$(invocation_canonical_file "$found") || \
-    invocation_preflight_fail 'could not resolve the exact subspace-tui target'
-  [[ -f $invocation_tui && ! -L $invocation_tui && -x $invocation_tui ]] || \
-    invocation_preflight_fail 'subspace-tui target is not an executable regular file'
-  if [[ $invocation_profile == explicit-briefing ]]; then
-    set +e
-    "$invocation_tui" --supports review-v1-provider-package-v1 \
-      > "$invocation_diagnostics/capability.stdout" 2> "$invocation_diagnostics/capability.stderr"
-    capability_status=$?
-    set -e
-    printf '%s\n' "$capability_status" > "$invocation_diagnostics/capability.exit"
-    [[ $capability_status == 0 ]] || \
-      invocation_preflight_fail 'subspace-tui does not support review-v1-provider-package-v1'
-    set +e
-    "$invocation_tui" --supports review-v1-resolution-mode-v1 \
-      > "$invocation_diagnostics/mode-capability.stdout" 2> "$invocation_diagnostics/mode-capability.stderr"
-    capability_status=$?
-    set -e
-    printf '%s\n' "$capability_status" > "$invocation_diagnostics/mode-capability.exit"
-    [[ $capability_status == 0 ]] || \
-      invocation_preflight_fail 'subspace-tui does not support review-v1-resolution-mode-v1'
-  else
-    # The bare journey probes the capability rather than pinning an exact
-    # release label: the child argv carries --mode, so what matters is whether
-    # the binary can carry one. No scratch exists yet in this profile, so the
-    # probe's own output is discarded.
-    set +e
-    "$invocation_tui" --supports review-v1-resolution-mode-v1 >/dev/null 2>&1
-    capability_status=$?
-    set -e
-    [[ $capability_status == 0 ]] || \
-      invocation_preflight_fail 'subspace-tui does not support review-v1-resolution-mode-v1; upgrade spacedock-dev/tap/subspace-beta'
-  fi
+  invocation_require_tui
   [[ -f $script_dir/validate-one-file-result && -x $script_dir/validate-one-file-result ]] || \
     invocation_preflight_fail 'canonical result validator is unavailable'
-  # Either profile dispatches through --invocation-child when async. Probed
-  # here, before any host probe or launch, same skew discipline as
-  # review-question-transport-v1. Sync never reaches the new op, so this is
-  # deliberately narrower than "one-file || async": it is async-only.
-  if [[ ${invocation_async:-0} == 1 ]]; then
-    set +e
-    "$invocation_tui" --supports review-invocation-child-v1 >/dev/null 2>&1
-    capability_status=$?
-    set -e
-    [[ $capability_status == 0 ]] || \
-      invocation_preflight_fail 'subspace-tui does not support review-invocation-child-v1; upgrade spacedock-dev/tap/subspace-beta'
+
+  if [[ $invocation_profile == one-file ]]; then
+    invocation_allocate_scratch "${TMPDIR:-/tmp}/subspace-r.XXXXXX" \
+      'could not create private invocation scratch' 'could not canonicalize private invocation scratch'
+    invocation_result=$invocation_dir/result.json
   fi
+
+  # Preparation runs before host preflight so every grammar and Artifact
+  # refusal lands before the selected host is probed or launched.
+  prepared_out=$invocation_dir/invocation-prepared.nul
+  prepare_args=(--invocation-prepare --name "$invocation_name" --tui "$invocation_tui" \
+    --dir "$invocation_dir" --out "$prepared_out")
+  [[ ${invocation_async:-0} != 1 ]] || prepare_args+=(--async)
+  prepare_args+=(--)
+  set +e
+  reason=$("$invocation_tui" "${prepare_args[@]}" "$@" 2>&1 >/dev/null)
+  status=$?
+  set -e
+  [[ $status != 2 ]] || invocation_usage
+  [[ $status == 0 ]] || invocation_preflight_fail "${reason:-invocation preparation failed}"
+  invocation_read_prepared "$prepared_out"
+  rm -f -- "$prepared_out"
 
   invocation_host_preflight
 
-  umask 077
-  if [[ $invocation_profile == one-file ]]; then
-    scratch=$(mktemp -d "${TMPDIR:-/tmp}/subspace-r.XXXXXX") || \
-      invocation_preflight_fail 'could not create private invocation scratch'
-    invocation_dir=$(CDPATH= cd -- "$scratch" && pwd -P) || {
-      rmdir -- "$scratch" 2>/dev/null || true
-      invocation_preflight_fail 'could not canonicalize private invocation scratch'
-    }
-    invocation_result=$invocation_dir/result.json
-    invocation_capture=$invocation_dir/capture.json
-    invocation_trusted=$invocation_dir/trusted.json
-    invocation_fifo=$invocation_dir/invocation-status.fifo
-    invocation_capsule=$invocation_dir/invocation-child
-    invocation_created=1
-    chmod 700 "$invocation_dir" || invocation_preflight_fail 'could not make invocation scratch private'
-    [[ $(invocation_path_mode "$invocation_dir" || true) == 700 ]] || \
-      invocation_preflight_fail 'invocation scratch is not mode 0700'
-    invocation_child=("$invocation_tui" --actor person:reviewer --mode "$invocation_mode" \
-      --result "$invocation_result")
-    if [[ -n $invocation_question_run ]]; then
-      invocation_child+=(--question-run "$invocation_question_run")
-    fi
-    invocation_child+=("$invocation_artifact")
-    if [[ ${invocation_async:-0} == 1 ]]; then
-      invocation_command=("$invocation_tui" --invocation-child \
-        --status-fifo "$invocation_fifo" --cwd "$invocation_artifact_dir" -- "${invocation_child[@]}")
-    else
-      invocation_command=("${invocation_child[@]}")
-    fi
-  else
-    invocation_child=("$invocation_tui" --review-v1 --actor "$invocation_actor" --mode "$invocation_mode" \
-      --provider-package "$invocation_dir" "$invocation_artifact")
-    invocation_supervised=("$invocation_tui" --provider-supervise \
-      --child-exit "$invocation_child_exit" --stderr "$invocation_stderr" \
-      --argv "$invocation_argv" -- "${invocation_child[@]}")
-    if [[ ${invocation_async:-0} == 1 ]]; then
-      invocation_command=("$invocation_tui" --invocation-child \
-        --status-fifo "$invocation_fifo" --cwd "$invocation_artifact_dir" -- "${invocation_supervised[@]}")
-    else
-      invocation_command=("${invocation_supervised[@]}")
-    fi
-  fi
-  [[ ! -e $invocation_result && ! -L $invocation_result ]] || invocation_preflight_fail 'result path already exists'
-  if [[ ${invocation_async:-0} == 1 ]]; then
-    invocation_prepare_async
-  fi
-  trap invocation_interrupted HUP INT TERM
-
   invocation_dispatched=1
-  invocation_defer_failures=1
   set +e
   invocation_host_dispatch
   dispatch_status=$?
   set -e
-  if [[ $dispatch_status != 0 ]]; then
-    invocation_preserve_fail "selected host launch failed with status $dispatch_status" "$dispatch_status"
-  elif [[ ${invocation_async:-0} == 1 ]]; then
-    invocation_receive_async
-  elif [[ $invocation_profile == explicit-briefing ]]; then
-    invocation_receive_provider_sync
-  elif [[ $invocation_profile == one-file ]]; then
-    invocation_wait_for_result
-  fi
 
-  if [[ -z $invocation_failure_reason ]]; then
-    result_present=0
-    if [[ $invocation_profile == one-file ]]; then
-      if ! [[ -f $invocation_result && ! -L $invocation_result ]]; then
-        invocation_preserve_fail 'terminal returned no regular result'
-      elif [[ $(invocation_path_mode "$invocation_result" || true) != 600 ]]; then
-        invocation_preserve_fail 'terminal result is not mode 0600'
-      elif cat -- "$invocation_result" > "$invocation_capture"; then
-        result_present=1
-      else
-        invocation_preserve_fail 'could not capture the terminal result'
-      fi
-    elif [[ -e $invocation_result || -L $invocation_result ]]; then
-      if ! [[ -f $invocation_result && ! -L $invocation_result ]]; then
-        invocation_preserve_fail 'terminal returned a non-regular result'
-      elif cat -- "$invocation_result" > "$invocation_capture"; then
-        result_present=1
-      else
-        invocation_preserve_fail 'could not capture the terminal result'
-      fi
-    else
-      : > "$invocation_capture" || invocation_preserve_fail 'could not create missing-result capture'
-    fi
+  set +e
+  "$invocation_tui" --invocation-finish --state "$invocation_state" \
+    --dispatch-status "$dispatch_status" \
+    --validator "$script_dir/validate-one-file-result" --reason-out "$invocation_reason_file"
+  status=$?
+  set -e
+  reason=
+  [[ ! -s $invocation_reason_file ]] || IFS= read -r reason < "$invocation_reason_file" || true
+  # A non-zero completion whose reason never reached the file would otherwise
+  # read as success here and be delivered as one.
+  [[ $status == 0 || -n $reason ]] || reason='invocation completion failed'
 
-    if [[ -z $invocation_failure_reason &&
-      ( $result_present == 1 || $invocation_profile == explicit-briefing ) ]]; then
-      set +e
-      if [[ $invocation_profile == one-file ]]; then
-        "$script_dir/validate-one-file-result" "$invocation_artifact" "$invocation_revision" \
-          "$invocation_mode" "$invocation_result" "$invocation_capture" > "$invocation_trusted"
-      else
-        "$script_dir/validate-one-file-result" --review-v1 "$invocation_artifact" "$invocation_revision" \
-          "$invocation_actor" "$invocation_mode" "$invocation_result" "$invocation_log" \
-          "$invocation_inventory" "$invocation_child_exit" "$invocation_capture" > "$invocation_trusted"
-      fi
-      revision_status=$?
-      set -e
-      if [[ $revision_status != 0 ]]; then
-        if [[ $invocation_profile == explicit-briefing ]]; then
-          invocation_preserve_fail 'canonical result validation failed' 1
-        else
-          invocation_preserve_fail 'canonical result validation failed' "$revision_status"
-        fi
-      fi
-    fi
-
-    if [[ -z $invocation_failure_reason ]]; then
-      set +e
-      cat -- "$invocation_trusted"
-      dispatch_status=$?
-      set -e
-      if [[ $dispatch_status != 0 ]]; then
-        invocation_preserve_fail 'trusted result delivery failed' "$dispatch_status"
-      fi
-    fi
-  fi
-
+  # The host's own completion hook runs whether or not the review succeeded,
+  # and its failure joins the one reason line reported at the end.
   if declare -F invocation_host_complete >/dev/null; then
     set +e
     invocation_host_complete
     host_status=$?
     set -e
     if [[ $host_status != 0 ]]; then
-      invocation_note_failure "${invocation_host_failure_reason:-host cleanup failed}" \
-        "${invocation_host_failure_status:-$host_status}"
+      if [[ -z $reason ]]; then
+        reason=${invocation_host_failure_reason:-host cleanup failed}
+        status=${invocation_host_failure_status:-$host_status}
+      else
+        reason="$reason; ${invocation_host_failure_reason:-host cleanup failed}"
+      fi
     fi
   fi
 
-  if [[ -z $invocation_failure_reason ]]; then
-    if [[ $invocation_profile == one-file ]]; then
-      rm -f -- "$invocation_result" "$invocation_capture" "$invocation_trusted" \
-        "$invocation_fifo" "$invocation_capsule" || \
-        invocation_preserve_fail 'successful delivery could not clean invocation files'
-      rmdir -- "$invocation_dir" || invocation_preserve_fail 'successful delivery could not clean invocation directory'
+  # Cleanup runs strictly after that hook, so retention reflects the host's own
+  # outcome. A failed review keeps its scratch, so this is reached only on success.
+  if [[ -z $reason ]]; then
+    set +e
+    reason=$("$invocation_tui" --invocation-cleanup --state "$invocation_state")
+    host_status=$?
+    set -e
+    if [[ $host_status == 0 ]]; then
+      reason=
     else
-      rm -f -- "$invocation_capture" "$invocation_trusted" "$invocation_fifo" "$invocation_capsule" || \
-        invocation_preserve_fail 'successful provider transient cleanup failed'
-      printf 'review-%s: retained provider package: %s\n' "$invocation_name" "$invocation_dir" >&2
+      reason=${reason:-invocation cleanup failed}
+      status=$host_status
     fi
   fi
 
-  invocation_defer_failures=0
-  if [[ -n $invocation_failure_reason ]]; then
-    invocation_preserve_fail "$invocation_failure_reason" "$invocation_failure_status"
-  fi
   trap - HUP INT TERM
+  [[ -z $reason ]] || invocation_preserve_fail "$reason" "$status"
 }
