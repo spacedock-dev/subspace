@@ -10,6 +10,51 @@
 # scratch allocated before a Go process exists to own it, and the CLI grammar
 # the six fixed entries share.
 
+# Portable file mode (macOS/BSD stat vs GNU stat), used only by the private
+# initial-question-file leg below to enforce mode 0600 on the seed file.
+invocation_path_mode() {
+  local mode
+  if mode=$(stat -f '%Lp' "$1" 2>/dev/null); then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  stat -c '%a' "$1" 2>/dev/null
+}
+
+# Portable symlink-resolving realpath (macOS/BSD has no `realpath -e`), used
+# only by the private initial-question-file leg to canonicalize the seed path
+# before it crosses the daemon re-invocation boundary. macOS spells a caller's
+# /var/... scratch as canonical /private/var/...; this canonicalizes the
+# target so the seed path stays byte-identical end to end.
+invocation_canonical_file() {
+  local path=$1 parent target count=0
+  while [[ -L $path ]]; do
+    (( count += 1 ))
+    (( count <= 40 )) || return 1
+    target=$(readlink "$path") || return 1
+    if [[ $target == /* ]]; then
+      path=$target
+    else
+      parent=${path%/*}
+      [[ $path == */* ]] || parent=.
+      [[ -n $parent ]] || parent=/
+      path=$parent/$target
+    fi
+  done
+  parent=${path%/*}
+  if [[ $path != */* ]]; then
+    parent=.
+  elif [[ -z $parent ]]; then
+    parent=/
+  fi
+  parent=$(CDPATH= cd -P -- "$parent" && pwd -P) || return 1
+  if [[ $parent == / ]]; then
+    printf '/%s\n' "${path##*/}"
+  else
+    printf '%s/%s\n' "$parent" "${path##*/}"
+  fi
+}
+
 invocation_usage() {
   invocation_discard_scratch
   printf 'usage: review-%s [--mode MODE] <file.md>\n' "$invocation_name" >&2
@@ -45,6 +90,18 @@ invocation_preserve_fail() {
   printf 'review-%s: %s; recoverable scratch: %s%s\n' \
     "$invocation_name" "$1" "$invocation_dir" "${invocation_residue:-}" >&2
   exit "${2:-1}"
+}
+
+invocation_prepare_initial_question() {
+  local supplied=$1
+  invocation_initial_question_file=$(invocation_canonical_file "$supplied") || \
+    invocation_preflight_fail 'could not canonicalize the initial question file'
+  [[ -f $invocation_initial_question_file && -r $invocation_initial_question_file ]] || \
+    invocation_preflight_fail "initial question is not a readable regular file: $supplied"
+  [[ $(invocation_path_mode "$invocation_initial_question_file" || true) == 600 ]] || \
+    invocation_preflight_fail 'initial question file must have mode 0600'
+  grep -q '[^[:space:]]' "$invocation_initial_question_file" || \
+    invocation_preflight_fail 'initial question must be nonblank'
 }
 
 invocation_interrupted() {
@@ -113,7 +170,7 @@ question_leg() {
 }
 
 question_leg_arm() {
-  local supplied= mode=feedback budget= launch_args seen_mode=0
+  local supplied= mode=feedback budget= launch_args seen_mode=0 seen_initial_question=0
   while [[ $# -gt 0 ]]; do
     case $1 in
       --mode)
@@ -126,6 +183,13 @@ question_leg_arm() {
       --machine-budget)
         [[ $# -ge 2 ]] || invocation_usage
         budget=$2
+        shift 2
+        ;;
+      --initial-question-file)
+        [[ $# -ge 2 ]] || invocation_usage
+        [[ $seen_initial_question == 0 ]] || invocation_preflight_fail 'duplicate --initial-question-file'
+        seen_initial_question=1
+        invocation_prepare_initial_question "$2"
         shift 2
         ;;
       -*) invocation_usage ;;
@@ -147,6 +211,9 @@ question_leg_arm() {
     --entry "$0" --mode "$mode" --artifact "$supplied")
   if [[ -n $budget ]]; then
     launch_args+=(--machine-budget "$budget")
+  fi
+  if [[ -n ${invocation_initial_question_file:-} ]]; then
+    launch_args+=(--initial-question-file "$invocation_initial_question_file")
   fi
   exec "$invocation_tui" "${launch_args[@]}"
 }

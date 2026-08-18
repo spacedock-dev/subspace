@@ -11,14 +11,22 @@ question can be asked and re-asked without re-typing it to a dispatch session
 each time.
 
 This is a thin skill, not a new protocol. It reuses the existing one-file
-`--allow-question` arming leg from the `r` skill completely unchanged, by
-writing a small placeholder file for that leg to snapshot, and it overrides
-exactly one thing the `r` skill's shared instructions say: where the answer
-comes from.
+`--allow-question` arming leg from the `r` skill, by writing a small placeholder
+file for that leg to snapshot. A nonblank invocation suffix is passed through
+one private seed file; DRY also overrides exactly one thing the `r` skill's
+shared instructions say: where the answer comes from.
+
+## Interpret the invocation
+
+`/dry` and `/dry` followed only by whitespace keep the existing idle pane: do
+not create or pass an initial-question file. For `/dry <question>`, remove only
+the invocation delimiter and preserve every question byte after it exactly.
+Do not trim, normalize, add a newline, or ask the captain to type it again.
 
 ## Write the placeholder
 
-1. Create a fresh scratch directory: `mktemp -d`.
+1. Create a fresh scratch directory: `mktemp -d`, and keep it until the DRY
+   session ends.
 2. Resolve the project directory: the canonicalized absolute current working
    directory.
 3. Write `<scratch>/dry-status.md` with this exact body, substituting
@@ -40,6 +48,10 @@ comes from.
    cannot be written, nothing was armed: report the write failure and stop.
    Do not retry, and do not fall back to a real project file — the whole
    point is that no document is named.
+4. For a nonblank invocation question only, write its exact bytes, with no
+   added newline, to `<scratch>/initial-question`; set and verify mode `0600`.
+   If the private regular file cannot be written or verified, report the
+   failure and stop. Do not retry or fall back.
 
 ## Arm
 
@@ -54,17 +66,30 @@ invocation* sections exactly as written, with one substitution: invoke
 SUBSPACE_DRY=1 review-<selected-terminal> --allow-question <scratch>/dry-status.md
 ```
 
-the plain one-file arming form, with no `--mode` and no `--placement`, plus
-the `SUBSPACE_DRY=1` shell environment prefix -- a plain assignment on the
-command line, not an entry argument. That prefix is the one thing that is
-not byte-identical to arming any other one-file review through the `r`
-skill: it is `dry`'s explicit signal that this Artifact is its own
-placeholder, threaded through the shared lifecycle (`buildInvocationCommand`)
-into the launched review's environment so it opens on the question rail
-instead of the placeholder document. It controls startup presentation only
--- not authority, Resolution, or the portable record. Do not drop it: the
-selected entry and the run directory it mints have no other way to
-distinguish this Artifact from a document someone asked to review.
+for a bare or whitespace-only invocation. For a nonblank question invoke:
+
+```text
+SUBSPACE_DRY=1 review-<selected-terminal> --allow-question --initial-question-file <scratch>/initial-question <scratch>/dry-status.md
+```
+
+Use no `--mode` and no `--placement`. The `SUBSPACE_DRY=1` shell environment
+prefix -- a plain assignment on the command line, not an entry argument -- is
+the one thing that is not byte-identical to arming any other one-file review
+through the `r` skill: it is `dry`'s explicit signal that this Artifact is its
+own placeholder, threaded through the shared lifecycle
+(`buildInvocationCommand`) into the launched review's environment so it opens
+on the question rail instead of the placeholder document. It controls startup
+presentation only -- not authority, Resolution, or the portable record. Do not
+drop it: the selected entry and the run directory it mints have no other way
+to distinguish this Artifact from a document someone asked to review.
+
+The private `--initial-question-file` flag carries only the seed file path;
+its text does not enter argv, environment, config, or the run directory. The
+TUI emits it as ordinary question 1 without `Q` or retyping. The two
+mechanisms are independent: `SUBSPACE_DRY=1` controls startup presentation
+(reading mode) for every DRY invocation, bare or seeded; `--initial-question-file`
+additionally seeds question 1 only when the invocation carried a nonblank
+question.
 
 Some agent harnesses match Bash-tool permission rules against the literal
 invoked command's prefix. Because this line prepends `SUBSPACE_DRY=1` to
@@ -114,6 +139,10 @@ opaque `run`/`questionId` handling — with these two overrides:
 Every other returned `state` (`question`, `answered`, `waiting`, `abandoned`,
 `declined`, `expired`) is handled exactly as `../r/SKILL.md` describes,
 with no DRY-specific change.
+
+After the receiver reports a terminal `result` or `aborted` state, remove the
+DRY scratch directory. Do not remove it while the armed child can still need
+the seed file.
 
 ## Act within existing authority
 
