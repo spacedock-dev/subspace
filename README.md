@@ -84,11 +84,96 @@ Press <kbd>Q</kbd> to ask about the file. The agent keeps a poller active while
 the review is open. It answers from the same file that you can see in Subspace.
 You can continue the review while the agent prepares the answer.
 
-When you finish, Subspace returns comments and suggested edits to the agent.
-Each item stays attached to the text that you selected.
+Review starts in a pager-first Browse surface. Comment on the focused block
+with <kbd>c</kbd>, or use <kbd>s</kbd> to start an explicit Range Target for a
+replacement. In Range Target, <kbd>y</kbd> copies the range, <kbd>c</kbd>
+comments on it, and <kbd>s</kbd> suggests its replacement. Press <kbd>?</kbd> on
+a non-input review surface for the complete map below.
 
-Press <kbd>?</kbd> from any non-editor review surface to see its current
-keyboard shortcuts.
+<!-- subspace-key-map:start -->
+### Global
+
+| Surface | Control | Action |
+| --- | --- | --- |
+| Review | `q` | done |
+| Decision review | `Tab` | choose decision |
+| Review | `?` | help |
+| Review | `Ctrl-O` | leave open |
+| Reader | `Y` | toggle side pane |
+| Reader | `Ctrl-Y` | read Findings |
+
+### Browse
+
+| Surface | Control | Action |
+| --- | --- | --- |
+| Browse | `j/k/↑/↓` | move block |
+| Browse | `Space/f/PgDn/Ctrl-F` | page forward |
+| Browse | `b/PgUp` | page backward |
+| Browse | `g/Home · G/End` | document bounds |
+| Context | `j/k/↑/↓` | move |
+| Context | `PgUp/PgDn` | page |
+| Context | `g/G` | document bounds |
+| Context | `Home/End` | line bounds |
+| Browse | `c` | comment block |
+| Browse | `s` | select range |
+| Browse | `→/Esc` | focus Findings |
+
+### Range
+
+| Surface | Control | Action |
+| --- | --- | --- |
+| Range | `↑/↓/←/→/hjkl` | move target |
+| Range | `Space/PgUp/PgDn` | page |
+| Range | `g/G` | document bounds |
+| Range | `Home/End` | line bounds |
+| Range | `y` | copy range |
+| Range | `c` | comment target |
+| Range | `s` | replace range |
+| Pending suggestion | `Enter` | continue suggestion |
+| Range | `Esc` | clear target |
+
+### Findings
+
+| Surface | Control | Action |
+| --- | --- | --- |
+| Findings | `j/k/n/p/↑/↓` | focus row |
+| Findings | `x` | include annotation |
+| Findings | `e` | edit draft |
+| Focused answer | `Enter` | open answer |
+| Open answer | `Space/PgUp/PgDn` | page answer |
+
+### Finish
+
+| Surface | Control | Action |
+| --- | --- | --- |
+| Finish | `type/Ctrl-E` | overall input |
+| Finish input | `Tab` | insert tab |
+| Finish | `Enter` | send |
+| Finish | `Esc` | back |
+
+### Tools
+
+| Surface | Control | Action |
+| --- | --- | --- |
+| Input | `Enter` | save |
+| Input | `Ctrl-J` | newline |
+| Input | `Alt-Enter` | distinct newline |
+| Input | `Esc` | back |
+| Browse/Range/Context | `/ · n/N` | find · next/previous |
+| Reader | `A` | choose source |
+| Artifact | `[/]` | previous/next |
+| Artifact/Range | `F` | frontmatter |
+| Folded frontmatter | `Enter on …` | expand/collapse |
+| Mermaid | `m` | render/source |
+| Reader | `:/#` | line/gutters |
+| Question | `Q/R/T` | ask/refresh/auto-refresh |
+| One file | `D` | toggle focus |
+| Find/Context | `Ctrl-C` | cancel |
+| Source picker | `j/k` | move |
+| Source picker | `Enter` | open |
+| Source picker | `Esc` | cancel |
+
+<!-- subspace-key-map:end -->
 
 ![A comment attached to selected text in Subspace](assets/anchored-feedback.png)
 

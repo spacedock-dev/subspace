@@ -408,6 +408,31 @@ SOFTWARE.
 
 
 ================================================================
+Module: github.com/cyberphone/json-canonicalization
+Version: v0.0.0-20241213102144-19d51d7fe467
+Sum: h1:uX1JmpONuD549D73r6cgnxyUu18Zb7yHAy5AYU0Pm4Q=
+Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Legal sources: LICENSE
+
+----- BEGIN LICENSE (600 bytes) -----
+   Copyright 2018 Anders Rundgren
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       https://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+----- END LICENSE -----
+
+
+================================================================
 Module: github.com/lucasb-eyer/go-colorful
 Version: v1.3.0
 Sum: h1:2/yBRLdWBZKrf7gB40FoiKfAWYQ0lqNcbuQwVHXptag=

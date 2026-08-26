@@ -63,6 +63,7 @@ invocation_usage() {
   printf '   or: review-%s --poll-question [--run DIR]\n' "$invocation_name" >&2
   printf '   or: review-%s --decline-question [--run DIR] --for-question ID --reason TEXT\n' "$invocation_name" >&2
   printf '   or: review-%s --review-v1 --actor ID --mode MODE <briefing-file>\n' "$invocation_name" >&2
+  printf '   or: review-%s --gate-room <room>\n' "$invocation_name" >&2
   exit 2
 }
 
@@ -70,14 +71,24 @@ invocation_usage() {
 # dispatch: nothing is published into it yet, and the guard keeps a published
 # result out of the blast radius. A provider package is never discarded.
 invocation_discard_scratch() {
-  [[ ${invocation_created:-0} == 1 && ${invocation_profile:-one-file} == one-file ]] || return 0
+  local discard=${invocation_dir:-}
+  [[ ${invocation_created:-0} == 1 ]] || return 0
+  [[ ${invocation_profile:-one-file} == one-file ||
+    (${invocation_profile:-one-file} == gate-room && ${invocation_dispatched:-0} == 0) ]] || return 0
   [[ ! -e ${invocation_result:-} && ! -L ${invocation_result:-} ]] || return 0
-  rm -rf -- "$invocation_dir" 2>/dev/null || true
+  if [[ ${invocation_profile:-one-file} == gate-room ]]; then
+    if [[ -n ${invocation_staged_state:-} && -n ${invocation_tui:-} ]]; then
+      "$invocation_tui" --invocation-abort --state "$invocation_staged_state" >/dev/null 2>&1 || true
+    fi
+    discard=${invocation_materialization:-$discard}
+  fi
+  [[ -n $discard ]] && rm -rf -- "$discard" 2>/dev/null || true
 }
 
 invocation_preflight_fail() {
   invocation_discard_scratch
-  if [[ ${invocation_profile:-one-file} == explicit-briefing && ${invocation_created:-0} == 1 ]]; then
+  if [[ ${invocation_created:-0} == 1 &&
+    ${invocation_profile:-one-file} == explicit-briefing ]]; then
     printf 'review-%s: %s; retained provider package: %s\n' \
       "$invocation_name" "$1" "$invocation_dir" >&2
   else
@@ -87,8 +98,9 @@ invocation_preflight_fail() {
 }
 
 invocation_preserve_fail() {
-  printf 'review-%s: %s; recoverable scratch: %s%s\n' \
-    "$invocation_name" "$1" "$invocation_dir" "${invocation_residue:-}" >&2
+  printf 'review-%s: %s; recoverable scratch: %s%s%s\n' \
+    "$invocation_name" "$1" "$invocation_dir" \
+    "${invocation_materialization_residue:-}" "${invocation_residue:-}" >&2
   exit "${2:-1}"
 }
 
@@ -110,8 +122,9 @@ invocation_interrupted() {
   if [[ ${invocation_dispatched:-0} == 0 ]]; then
     invocation_preflight_fail 'interrupted before launch' 130
   fi
-  printf 'review-%s: interrupted; recoverable scratch: %s%s\n' \
-    "$invocation_name" "$invocation_dir" "${invocation_residue:-}" >&2
+  printf 'review-%s: interrupted; recoverable scratch: %s%s%s\n' \
+    "$invocation_name" "$invocation_dir" \
+    "${invocation_materialization_residue:-}" "${invocation_residue:-}" >&2
   exit 130
 }
 
@@ -154,6 +167,19 @@ invocation_require_tui() {
   set -e
   [[ $status == 0 ]] || invocation_preflight_fail \
     'subspace-tui does not support review-invocation-prepare-v1; upgrade spacedock-dev/tap/subspace-beta' 127
+}
+
+# Gate-room grammar was added after the common lifecycle. Probe it separately
+# before allocating materialization scratch so a plugin-ahead-of-binary install
+# fails with the established upgrade guidance, not a misleading usage block.
+invocation_require_gate_room() {
+  local status
+  set +e
+  "$invocation_tui" --supports spacedock-gate-room-v1 >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ $status == 0 ]] || invocation_preflight_fail \
+    'subspace-tui does not support spacedock-gate-room-v1; upgrade spacedock-dev/tap/subspace-beta' 127
 }
 
 # ---------------------------------------------------------------------------
@@ -232,6 +258,12 @@ invocation_read_prepared() {
   invocation_artifact_dir=${prepared[2]}
   invocation_capsule=${prepared[3]}
   invocation_command=("${prepared[@]:4}")
+  if [[ ${invocation_profile:-} == gate-room ]]; then
+    invocation_staged_state=$invocation_state
+    invocation_materialization=$invocation_dir
+    invocation_materialization_residue="; materialized sources: $invocation_dir"
+    invocation_dir=${invocation_state%/diagnostics/invocation-state.json}
+  fi
 }
 
 invocation_allocate_scratch() {
@@ -260,6 +292,9 @@ invocation_main() {
   invocation_dispatched=0
   invocation_residue=
   invocation_result=
+  invocation_staged_state=
+  invocation_materialization=
+  invocation_materialization_residue=
   invocation_host_failure_reason=
   invocation_host_failure_status=0
   invocation_profile=one-file
@@ -281,9 +316,17 @@ invocation_main() {
       invocation_preflight_fail 'could not create provider diagnostics'
     printf '%s\0' "$invocation_name" "$@" > "$invocation_dir/diagnostics/inputs.nul" || \
       invocation_preflight_fail 'could not stamp provider inputs'
+  elif [[ ${1:-} == --gate-room ]]; then
+    [[ $# == 2 && -n ${2//[[:space:]]/} ]] || invocation_usage
+    invocation_profile=gate-room
   fi
 
   invocation_require_tui
+  if [[ $invocation_profile == gate-room ]]; then
+    invocation_require_gate_room
+    invocation_allocate_scratch "${TMPDIR:-/tmp}/subspace-r-gate.XXXXXX" \
+      'could not allocate gate-room materialization' 'could not resolve gate-room materialization'
+  fi
   [[ -f $script_dir/validate-one-file-result && -x $script_dir/validate-one-file-result ]] || \
     invocation_preflight_fail 'canonical result validator is unavailable'
 
@@ -310,6 +353,17 @@ invocation_main() {
   rm -f -- "$prepared_out"
 
   invocation_host_preflight
+
+  if [[ $invocation_profile == gate-room ]]; then
+    set +e
+    reason=$("$invocation_tui" --invocation-commit --state "$invocation_state" 2>&1)
+    status=$?
+    set -e
+    [[ $status == 0 && -n $reason ]] || \
+      invocation_preflight_fail "${reason:-gate provider commit failed}"
+    invocation_state=$reason
+    invocation_dir=${invocation_state%/diagnostics/invocation-state.json}
+  fi
 
   invocation_dispatched=1
   set +e

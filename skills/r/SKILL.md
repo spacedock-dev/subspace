@@ -1,6 +1,6 @@
 ---
 name: r
-description: Review one readable Markdown file for feedback or present one canonical Briefing package in the native Subspace TUI through Zellij, tmux, Herdr, CMUX, Ghostty, or Apple Terminal.
+description: Review one readable Markdown file for feedback or present one canonical Briefing package or prepared Spacedock gate room in the native Subspace TUI through Zellij, tmux, Herdr, CMUX, Ghostty, or Apple Terminal.
 ---
 
 # Review a file or canonical Briefing
@@ -12,6 +12,7 @@ Accept one of these disjoint forms:
   [--placement <floating|right>] <file.md> [terminal]
 --review-v1 --actor <actor> --mode <feedback|advisory|binding>
   <briefing-file> [terminal]
+gate <room> [terminal]
 ```
 
 The terminal is
@@ -20,6 +21,18 @@ other name and every extra argument before any terminal probe or launch. The
 terminal chooses presentation wiring only; never pass its name to an entry or
 the TUI. The explicit `--review-v1` token selects package mode. Never infer a
 profile from a suffix or file content.
+
+`gate` selects one prepared room, accepts no actor or mode, and fixes binding
+authority to `person:captain`. Read only `index.json`; inspect neither
+`request.json` nor archived `briefing.json`. The canonical id's entity, stage,
+positive attempt, and revision must agree with the room path. Its JCS digest
+identifies bytes; Spacedock's recorder owns frozen authority. Resolve pinned
+`git-root://main` and `git-root://state` sources from local Git objects unchanged.
+An omitted `context` means an empty collection; when present, `context` must be
+an array. Explicit `null` and every non-array value fail before provider
+creation or host launch. These Spacedock semantics belong to the prepared gate
+profile, not the ordinary plain-file loader. File modes retain their existing
+authority contract.
 
 For a plain file, resolve its relative, absolute, or symlinked Markdown locator
 to one readable regular target with a searchable resolved parent. The selected
@@ -51,17 +64,19 @@ spelling, parent permissions, and Unix mode are not Review v1 preconditions.
 The canonical loader establishes that the content is a valid Briefing.
 
 The selected fixed entry owns path resolution, revision pinning, exact
-`subspace-tui` resolution, the single literal
-`review-invocation-prepare-v1` capability check, allocation of one fresh
-retained provider package, host preflight, launch, delivery, canonical
-validation, and cleanup. The caller never chooses Result, log, inventory,
-diagnostics, staging, title, or mode mechanics. Do not duplicate those checks
-with model-authored shell commands.
+`subspace-tui` resolution, the literal common lifecycle capability check and
+gate-specific check described below, allocation of one fresh retained provider
+package, host preflight, launch, delivery, canonical validation, and cleanup.
+The caller never chooses Result, log, inventory, diagnostics, staging, title,
+or mode mechanics. Do not duplicate those checks with model-authored shell
+commands.
 
-Both journeys probe `review-invocation-prepare-v1` once, before any host
-preflight, and refuse to launch against a binary that does not carry it. One
-token stands for the whole lifecycle. No exact release label is consulted for
-either journey.
+Every journey probes `review-invocation-prepare-v1` once, before any host
+preflight, and refuses to launch against a binary that does not carry it. The
+gate journey also probes `spacedock-gate-room-v1` before allocating
+materialization scratch. One common token stands for the lifecycle, while the
+gate token proves that the binary understands the newer prepared profile. No
+exact release label is consulted.
 
 ## Select one terminal
 
@@ -176,6 +191,7 @@ entries:
 review-<selected-terminal> [--allow-question] [--mode <feedback|advisory|binding>] [--placement <floating|right>] <file.md>
 review-<selected-terminal> --review-v1 --actor <actor>
   --mode <feedback|advisory|binding> <briefing-file>
+review-<selected-terminal> --gate-room <room>
 ```
 
 Do not run a plan, prerequisite probe, version check, scratch command,
@@ -258,8 +274,9 @@ validator's trusted record byte-for-byte. Zellij and tmux continue waiting when
 the blocking host command returns just before the same invocation atomically
 publishes its result; that wait is not a retry or relaunch.
 
-In package mode, common mechanics allocate one fresh retained provider package
-and the fixed entry starts one private provider supervisor. The supervisor
+In package mode, common mechanics allocate one fresh retained provider package.
+In gate mode, validated preparation creates the room-owned provider
+fresh. The fixed entry then starts one private provider supervisor. The supervisor
 launches the exact `subspace-tui --review-v1 --actor <actor> --mode
 <feedback|advisory|binding> --provider-package <provider-root> <briefing-file>`
 child, waits for
@@ -270,13 +287,14 @@ calls the canonical validator once only after an exit-zero child. It retains
 the unchanged Result, log, presented inventory, argv, child exit, stderr, and
 diagnostics together on success and failure.
 
-A capability refusal is reported, not filed. The single
-`review-invocation-prepare-v1` probe runs once before any host preflight and
-its outcome reaches the caller as the named `does not support … upgrade`
-message on stderr, with the package retained and `diagnostics/inputs.nul`
-recording what was asked for. Per-probe `capability.stdout`, `capability.exit`
-and `mode-capability.*` files are not written: five scattered probes each
-filing evidence became one probe whose refusal is already loud and named.
+A capability refusal is reported, not filed. The common
+`review-invocation-prepare-v1` probe runs once before any host preflight. Gate
+mode additionally probes `spacedock-gate-room-v1` before allocating its
+materialization scratch. Either refusal reaches the caller as the named `does
+not support … upgrade` message on stderr. A package that already exists is
+retained with `diagnostics/inputs.nul` recording what was asked for. Per-probe
+`capability.stdout`, `capability.exit`, and `mode-capability.*` files are not
+written: the refusal is already loud and named.
 
 Two files under `diagnostics/` carry the invocation's own identity, and both
 are retained with the package. `invocation-state.json` is one JSON record
@@ -297,8 +315,10 @@ result, failed delivery, cleanup failure, or uncertain terminal state after
 launch preserves the recovery path and possible host residue.
 
 For Markdown, the binary alone constructs the Briefing and snapshots the
-Artifact. For package mode, it loads the supplied Briefing unchanged. In both
-profiles, the binary renders the TUI and atomically publishes the result; the
+Artifact. For package mode, it loads the supplied Briefing unchanged. The gate
+profile first validates and materializes the prepared room, then uses the same
+provider lifecycle without rewriting the Briefing or Result. In all profiles,
+the binary renders the TUI and atomically publishes the result; the
 entries own lifecycle and host placement. Do not add a second result, parser,
 generic adapter, or terminal registry.
 
@@ -474,22 +494,28 @@ The selected entry calls its preserved four-argument interface once for
 Markdown or its explicit package profile once for a canonical Briefing. Do not
 author or run a decoder, parser, or independent validator in the skill.
 
-On success, use the trusted record only to report feedback with ordered annotations
-in normal prose, say the review completed with no feedback when
-its ordered annotations are empty, or say the review remains open and name its
-continuation. Never call a plain-file outcome an approval, Decision,
-Resolution, verdict, or gate result. Never expose raw Review JSON.
+For a plain file in `feedback` mode, use the trusted record only to report
+feedback with ordered annotations in normal prose, say the review completed with no feedback
+when they are empty, or say the review remains open and name its continuation.
+Never call that feedback-only outcome an approval, Decision, Resolution,
+verdict, or gate result. For a plain file in `advisory` or `binding` mode,
+report the trusted validated Resolution's decision and reason in normal prose
+and identify whether its authority is advisory or binding. Never expose raw
+Review JSON.
 
-For package mode, return the trusted retained Result without changing it and
-report the provider-package location emitted by the fixed entry. The declared
-mode alone decides authority: `feedback` returns Annotations with no decision
-surface, while `advisory` and `binding` return the same Resolution-carrying
-Result differing only in `binding`. No Result names a second identity. The presented
+For package mode, return the trusted retained Result without changing it.
+Report the provider-package location emitted by the fixed entry. The declared
+mode alone decides authority. `feedback` returns Annotations with no decision
+surface. `advisory` returns its advisory Resolution. `binding` returns the
+canonical five-key Result: `type`, `briefing`, `artifact`, `annotations`, and
+`resolution`. Its singular `resolution.by` is its sole authority attribution.
+For gate mode, return that binding Result as presentation evidence. Report the
+Captain's semantic decision and optional reason to the First Officer. The First Officer
+records that decision with stable Spacedock v0.27.0 `gate record --decision`. Spacedock
+does not read the provider Result, inventory, or diagnostics. No Result names a
+second identity. The presented
 inventory states the exact ordered Artifacts and recursively reached References
-Subspace displayed. A future scaffold request may bind an arbitrary Briefing
-locator plus canonical id/digest, actor, and mode into this same invocation. That composition seam
-does not authorize this skill to prepare requests, construct associations, call
-the recorder, interpret Routing, or continue a workflow.
+Subspace displayed.
 
 ## Act within existing authority
 

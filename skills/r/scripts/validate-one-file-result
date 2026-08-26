@@ -60,7 +60,7 @@ if [[ ${1:-} == --review-v1 ]]; then
       else empty end;
     def projected:
       [($package[0].artifacts[] | {type:"Artifact",id,uri,mediaType,rev})] +
-      [($package[0].context[] | context_nodes |
+      [(($package[0].context // [])[] | context_nodes |
         select(.type == "Reference" and (.id | type == "string" and length > 0)) |
         {type:"Reference",id,uri,mediaType:(.mediaType // ""),rev:(.rev // "")})];
     type == "object" and (keys | sort) == (["type","version","briefing","question","items"] | sort) and
@@ -86,19 +86,30 @@ if [[ ${1:-} == --review-v1 ]]; then
       .artifact == $package[0].artifacts[0] and .actor == $actor and
       .annotations == [$entries[] | select(.type == "Annotation")] and
       ($entries | map(select(.type == "Resolution")) | length) == 0;
-    def decision_completed:
+    def advisory_completed:
       (keys | sort) == (["type","mode","briefing","artifact","annotations","resolution",
         "binding","actor","resolutionId","decision","reason","includes"] | sort) and
-      .type == "review-v1-result" and .mode == $mode and .briefing == $briefing and
+      .type == "review-v1-result" and $mode == "advisory" and .mode == $mode and
+      .briefing == $briefing and
       .artifact == $package[0].artifacts[0] and .actor == $actor and
       .annotations == [$entries[] | select(.type == "Annotation")] and
       .resolution == ($entries | map(select(.type == "Resolution"))[-1]) and
       .decision == .resolution.decision and
       .reason == (.resolution.reason // "") and .includes == (.resolution.includes // []) and
       .resolution.briefing == $briefing and .resolution.by == $actor and decision and
-      .resolutionId == .resolution.id and .binding == ($mode == "binding");
+      .resolutionId == .resolution.id and .binding == false;
+    def binding_completed:
+      (keys | sort) == (["type","briefing","artifact","annotations","resolution"] | sort) and
+      .type == "review-v1-result" and $mode == "binding" and .briefing == $briefing and
+      .artifact == $package[0].artifacts[0] and
+      .annotations == [$entries[] | select(.type == "Annotation")] and
+      .resolution == ($entries | map(select(.type == "Resolution"))[-1]) and
+      .resolution.briefing == $briefing and .resolution.by == $actor and
+      (.resolution | decision);
     def completed:
-      if $mode == "feedback" then feedback_completed else decision_completed end;
+      if $mode == "feedback" then feedback_completed
+      elif $mode == "binding" then binding_completed
+      else advisory_completed end;
     length == 1 and (.[0] | type == "object") and
     if (.[0] | has("open")) then
       (.[0] | (keys | sort) == ["open"]) and (.[0].open | open)
@@ -188,20 +199,27 @@ jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$
       . == "at" or . == "decision" or . == "reason" or . == "includes")) and
     .type == "Resolution" and (.id | nonempty) and .briefing == $briefing and
     .by == "person:reviewer" and (.at | nonempty) and
-    (.decision == "approve" or .decision == "revise" or .decision == "hold");
-  def decision_result:
+    (.decision == "approve" or .decision == "revise" or .decision == "hold") and
+    ((.includes // []) | type == "array" and all(.[]; nonempty) and
+      ((unique | length) == length)) and
+    (if .decision == "approve" then true
+     else ((.reason // "") | length > 0) or ((.includes // []) | length > 0) end);
+  def advisory_result:
     exact_keys(["type","mode","briefing","artifact","annotations","resolution",
       "binding","actor","resolutionId","decision","reason","includes"]) and
-    .type == "review-v1-result" and .mode == $mode and
-    ($mode == "advisory" or $mode == "binding") and
+    .type == "review-v1-result" and $mode == "advisory" and .mode == $mode and
     .briefing == $briefing and (.artifact | artifact_identity) and
     .actor == "person:reviewer" and annotations_ok and
     (.resolution | resolution_entry) and
-    .binding == ($mode == "binding") and
+    .binding == false and
     .resolutionId == .resolution.id and .decision == .resolution.decision and
     .reason == (.resolution.reason // "") and
-    .includes == (.resolution.includes // []) and
-    (.includes | type == "array" and ((unique | length) == length));
+    .includes == (.resolution.includes // []);
+  def binding_result:
+    exact_keys(["type","briefing","artifact","annotations","resolution"]) and
+    .type == "review-v1-result" and $mode == "binding" and
+    .briefing == $briefing and (.artifact | artifact_identity) and
+    annotations_ok and (.resolution | resolution_entry);
   def open($root):
     exact_keys(["type","status","briefing","artifact","package","log"]) and
     .type == "review-v1-open-result" and .status == "open" and .briefing == $briefing and
@@ -211,7 +229,8 @@ jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$
     (.log | nonempty and . == ($root.package + "/briefing.review.jsonl"));
   if length != 1 or (.[0] | type) != "object" then error("exactly one result object is required")
   else .[0] as $root |
-    if ($root | feedback) or ($root | decision_result) or ($root | open($root)) then true
+    if ($root | feedback) or ($root | advisory_result) or
+      ($root | binding_result) or ($root | open($root)) then true
     else error("invalid one-file result") end
   end
 ' "$capture" >/dev/null || exit 20
