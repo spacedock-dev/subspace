@@ -241,6 +241,17 @@ this session, issues the plain or package-mode call in the foreground and
 keeps the turn alive until it returns, unchanged from before. An armed
 review has no such fallback (see *Answer questions during a review*).
 
+The same table binds the wait for a decision made on the web. After
+`remote-review` publishes and the user asked for the decision,
+`subspace-relay-client decision <share-url>` is that one blocking call: issue
+it through the implementation bound to the invoking runtime and read its single
+result once, when it ends. It needs no terminal, permission dialog or
+validator. Exit 0 prints the owner's verified binding Result unchanged, in the
+five-key shape *Report the returned record* describes; its authority is the
+relay's owner mark, not `resolution.by`. Exit 3 means no decision within 12 hours and the link is still
+live; run it again only if the user wants to keep waiting. Exit 4 means the
+link was revoked or expired. Exit 1 prints the reason.
+
 ### Host-owned placement
 
 - Zellij resolves `ZELLIJ_PANE_ID` through one validated caller-tab inventory,

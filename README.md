@@ -19,8 +19,11 @@ brew install spacedock-dev/tap/subspace-beta
 Install the prebuilt binary directly. The installer resolves the latest
 release through the canonical latest-release URL
 `http://spacedock.md/latest-release/subspace`, verifies the release's
-checksum before anything is placed, and installs `subspace-tui` into
-`~/.local/bin`:
+checksum before anything is placed, and installs the `subspace-tui` and
+`subspace-relay-client` binaries into `~/.local/bin` under their own names,
+each with its short command name — `sr` and `rr` — alongside it, unless that
+short name is already taken by something else, in which case the installer
+says so on stderr and carries on:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace/main/install.sh | sh
@@ -96,7 +99,7 @@ plain fenced code.
 
 ## License
 
-The Subspace skills are released under Apache 2.0. The `subspace-tui` tool
-itself is not currently open source. The permissions and attributions for
-external code linked into the tool are published in
+The Subspace skills are released under Apache 2.0. The `subspace-tui` and
+`subspace-relay-client` tools are not currently open source. The permissions
+and attributions for external code linked into them are published in
 [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).

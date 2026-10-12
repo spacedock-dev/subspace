@@ -1,6 +1,6 @@
 #!/bin/sh
-# ABOUTME: Universal curl|sh installer — fetch the checksum-verified subspace-tui
-# ABOUTME: release tarball for this host's OS/arch and install the bare binary.
+# ABOUTME: Universal curl|sh installer — fetch the checksum-verified Subspace
+# ABOUTME: release tarball for this host's OS/arch and install every binary in it.
 #
 # Usage (Linux or macOS without Homebrew):
 #   curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace/main/install.sh | sh
@@ -19,8 +19,15 @@
 #         `subspace_<ver>_<os>_<arch>.tar.gz` + `checksums.txt` layout.
 #   * Verifies the tarball sha256 against the matching `checksums.txt` line and
 #     ABORTS (installs nothing) on any mismatch — the gate is fail-closed.
-#   * Extracts the bare `subspace-tui` binary and installs it to
-#     SUBSPACE_INSTALL_DIR (default ~/.local/bin).
+#   * Extracts every binary the archive's `BINARIES.txt` inventory names, plus
+#     that inventory's symlinks, into SUBSPACE_INSTALL_DIR (default
+#     ~/.local/bin). The archive carries the inventory because this script runs
+#     on a user's machine with nothing but the tarball in hand.
+#   * Replaces a link name only when it already holds a symlink to the binary
+#     being installed. A link name held by anything this installer did not
+#     create — a symlink to a different target, a directory, or a plain file —
+#     is left alone, named on stderr, and does not fail the install: both
+#     binaries still land and the summary names every alias that was skipped.
 #
 # SUBSPACE_PRINT_TARGET=1 runs the detection + URL-construction path and prints
 # the resolved os/arch/asset/tarball/checksums, then exits before any download —
@@ -45,7 +52,7 @@ detect_os() {
 	case "$(uname -s)" in
 		Darwin) echo darwin ;;
 		Linux) echo linux ;;
-		*) die "unsupported OS $(uname -s); subspace-tui ships darwin/linux only" ;;
+		*) die "unsupported OS $(uname -s); Subspace ships darwin/linux only" ;;
 	esac
 }
 
@@ -112,6 +119,7 @@ main() {
 	need curl
 	need tar
 	need mktemp
+	need readlink
 
 	os="$(detect_os)"
 	arch="$(detect_arch)"
@@ -174,17 +182,51 @@ main() {
 		die "checksum mismatch for $asset (expected $expected, got $actual) — refusing to install"
 	fi
 
-	# Extract the bare `subspace-tui` binary (archive root, no wrapping dir) and
-	# install it. Only after the checksum passes do we touch the install dir.
-	tar -xzf "$tmp/$asset" -C "$tmp" subspace-tui || die "tarball did not contain a subspace-tui binary"
+	# Only after the checksum passes do we touch the install dir.
+	tar -xzf "$tmp/$asset" -C "$tmp" || die "could not extract $asset"
+	[ -f "$tmp/BINARIES.txt" ] || die "tarball carries no BINARIES.txt inventory — refusing to install"
 	mkdir -p "$INSTALL_DIR"
-	install -m 0755 "$tmp/subspace-tui" "$INSTALL_DIR/subspace-tui" 2>/dev/null \
-		|| { cp "$tmp/subspace-tui" "$INSTALL_DIR/subspace-tui" && chmod 0755 "$INSTALL_DIR/subspace-tui"; }
+	installed=""
+	skipped=""
+	while read -r name links; do
+		[ -n "$name" ] || continue
+		[ -f "$tmp/$name" ] || die "tarball inventory names $name but the archive has no such binary"
+		install -m 0755 "$tmp/$name" "$INSTALL_DIR/$name" 2>/dev/null \
+			|| { cp "$tmp/$name" "$INSTALL_DIR/$name" && chmod 0755 "$INSTALL_DIR/$name"; }
+		installed="$installed $name"
+		for link in $links; do
+			# `rr` is also Mozilla's record-and-replay debugger, so a link name
+			# can hold a program this installer must not remove. An occupied
+			# alias is a skipped convenience, not a failed install: warn, leave
+			# the occupant untouched, and keep going.
+			if [ -L "$INSTALL_DIR/$link" ]; then
+				existing="$(readlink "$INSTALL_DIR/$link")"
+				if [ "$existing" != "$name" ]; then
+					err "$INSTALL_DIR/$link is a symlink to $existing, not to $name — leaving it, skipping the $link alias"
+					skipped="$skipped $link"
+					continue
+				fi
+				rm -f "$INSTALL_DIR/$link"
+			elif [ -d "$INSTALL_DIR/$link" ]; then
+				err "$INSTALL_DIR/$link is a directory, not a symlink to $name — leaving it, skipping the $link alias"
+				skipped="$skipped $link"
+				continue
+			elif [ -e "$INSTALL_DIR/$link" ]; then
+				err "$INSTALL_DIR/$link is a file this installer did not create — leaving it, skipping the $link alias"
+				skipped="$skipped $link"
+				continue
+			fi
+			ln -s "$name" "$INSTALL_DIR/$link" || die "could not link $link to $name in $INSTALL_DIR"
+			installed="$installed $link"
+		done
+	done < "$tmp/BINARIES.txt"
+	[ -n "$installed" ] || die "tarball inventory named no binaries — refusing to report an install"
 
-	printf 'install.sh: installed subspace-tui %s to %s/subspace-tui\n' "$asset" "$INSTALL_DIR" >&2
+	printf 'install.sh: installed%s from %s to %s\n' "$installed" "$asset" "$INSTALL_DIR" >&2
+	[ -z "$skipped" ] || printf 'install.sh: skipped alias(es)%s — see warnings above for why\n' "$skipped" >&2
 	case ":$PATH:" in
 		*":$INSTALL_DIR:"*) ;;
-		*) err "note: $INSTALL_DIR is not on PATH; add it to run 'subspace-tui' directly" ;;
+		*) err "note: $INSTALL_DIR is not on PATH; add it to run these directly" ;;
 	esac
 }
 
