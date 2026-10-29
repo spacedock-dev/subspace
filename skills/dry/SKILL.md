@@ -57,19 +57,22 @@ Do not trim, normalize, add a newline, or ask the captain to type it again.
 
 `dry` has no scripts of its own. The bundled scripts directory is the `r`
 skill's, at `../r/scripts` relative to this skill's own directory — locate it
-there, not under a `dry/scripts` that does not exist.
+there, not under a `dry/scripts` that does not exist. Resolve each shown
+bundled-script path relative to this skill's directory to an absolute executable
+path before invoking it. Quote that executable and each argument separately; keep
+the caller's working directory. Do not look up the bundled executable on PATH.
 
 Follow `../r/SKILL.md`'s *Select one terminal* and *Permission and
 invocation* sections exactly as written, with one substitution: invoke
 
 ```text
-SUBSPACE_DRY=1 review-<selected-terminal> --allow-question <scratch>/dry-status.md
+SUBSPACE_DRY=1 ../r/scripts/review-<selected-terminal> --allow-question <scratch>/dry-status.md
 ```
 
 for a bare or whitespace-only invocation. For a nonblank question invoke:
 
 ```text
-SUBSPACE_DRY=1 review-<selected-terminal> --allow-question --initial-question-file <scratch>/initial-question <scratch>/dry-status.md
+SUBSPACE_DRY=1 ../r/scripts/review-<selected-terminal> --allow-question --initial-question-file <scratch>/initial-question <scratch>/dry-status.md
 ```
 
 Use no `--mode` and no `--placement`. The `SUBSPACE_DRY=1` shell environment
@@ -93,9 +96,9 @@ question.
 
 Some agent harnesses match Bash-tool permission rules against the literal
 invoked command's prefix. Because this line prepends `SUBSPACE_DRY=1` to
-the entry invocation, an allow-list rule scoped to the bare
-`review-<terminal>` command no longer matches, and the harness may ask
-for approval it would not otherwise ask for. This is a known, accepted
+the entry invocation, an allow-list rule scoped to the resolved
+`../r/scripts/review-<terminal>` command without that environment prefix no longer
+matches, and the harness may ask for approval it would not otherwise ask for. This is a known, accepted
 cost of the explicit-signal design — not a bug to fix here. A captain who
 wants to suppress it can add a local allow-list rule covering the
 `SUBSPACE_DRY=1`-prefixed form.
@@ -126,8 +129,9 @@ opaque `run`/`questionId` handling — with these two overrides:
   yet carry a separate structured evidence field (tracked separately:
   `evidence-threading-in-questiontransport`), so naming the action has to
   travel inside the answer text to stay visible and checkable. Submit with
-  the ordinary answer leg and nothing else: `--answer-question --for-question
-  <questionId> --text-file <file> --run <run>`.
+  the ordinary answer leg and nothing else:
+  `../r/scripts/review-<selected-terminal> --answer-question --for-question <questionId> --text-file <file> --run <run>`
+  (the same selected executable, resolved relative to this skill's directory).
 - **A quit is not a failure.** When the receiver returns `result` (pressing
   lowercase `q`, the documented and normal way to end a feedback-only
   session — `../r/SKILL.md`'s `finishFeedback` path) or `aborted` (any other

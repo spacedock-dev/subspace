@@ -54,7 +54,8 @@ opt-in on both hosts. `right` is a Zellij- and tmux-only declaration: refuse
 it with every other terminal name (Herdr,
 CMUX, Ghostty, Apple Terminal), and refuse every malformed placement — an
 unknown value, a duplicate, or a missing value — before invoking any entry.
-Pass the token only to `review-zellij` or `review-tmux`; every other entry
+Pass the token only to `scripts/review-zellij` or `scripts/review-tmux`
+(paths relative to this skill's directory); every other entry
 refuses it as unknown grammar. Never combine `--placement` with
 `--allow-question` or `--review-v1`: those journeys re-invoke the entry with a
 fixed argv and would silently drop it, so the combination is refused by name.
@@ -149,7 +150,9 @@ per invocation.
 
 If no family is present and the operating system is macOS,
 select Apple Terminal and invoke
-`review-apple-terminal [--mode <feedback|advisory|binding>] <file.md>` exactly once. On other
+`scripts/review-apple-terminal [--mode <feedback|advisory|binding>] <file.md>` exactly once.
+Resolve `scripts/review-apple-terminal` relative to this skill's directory to
+an absolute executable path and quote it separately from each argument. On other
 operating systems, report the supported names and ask for an explicit terminal.
 Never probe two hosts.
 
@@ -163,9 +166,9 @@ retrying the entry, or opening another surface.
 Obtain host permission before any probe of the selected terminal. Explain once
 that Subspace will pin the named Artifact and exact binary, inspect only the
 selected caller, create one provider-owned invocation package, open one
-interactive review surface, wait for its result, invoke
-`validate-one-file-result` exactly once, return the trusted bytes, and clean
-only successful transient scratch. State
+interactive review surface, wait for its result, have the selected entry invoke
+`scripts/validate-one-file-result` (relative to this skill's directory) exactly once, return the trusted
+bytes, and clean only successful transient scratch. State
 that it performs no network, package-manager, or repository write and no retry,
 fallback, Briefing construction, workflow routing, or suggestion application.
 Do not ask a separate natural-language yes/no question.
@@ -183,15 +186,18 @@ permission, or confinement stops with zero terminal probes and zero launches
 and names the access needed. Do not infer permission from a prior run or probe
 before permission.
 
-Locate the bundled scripts directory relative to this skill and invoke
-exactly one selected fixed entry point in one tool call with separate argv
-entries:
+Resolve `scripts/review-<selected-terminal>` relative to this skill's directory
+to an absolute executable path and invoke exactly one selected fixed entry point
+in one tool call with separate argv entries. Resolve each shown bundled-script
+path relative to this skill's directory to an absolute executable path before
+invoking it. Quote that executable and each argument separately; keep the caller's
+working directory. Do not look up the bundled executable on PATH:
 
 ```text
-review-<selected-terminal> [--allow-question] [--mode <feedback|advisory|binding>] [--placement <floating|right>] <file.md>
-review-<selected-terminal> --review-v1 --actor <actor>
+scripts/review-<selected-terminal> [--allow-question] [--mode <feedback|advisory|binding>] [--placement <floating|right>] <file.md>
+scripts/review-<selected-terminal> --review-v1 --actor <actor>
   --mode <feedback|advisory|binding> <briefing-file>
-review-<selected-terminal> --gate-room <room>
+scripts/review-<selected-terminal> --gate-room <room>
 ```
 
 Do not run a plan, prerequisite probe, version check, scratch command,
@@ -357,13 +363,14 @@ it off.
 Arming changes this skill's completion contract, and the change lands even when
 nobody asks anything. Each invocation returns as soon as it has something to
 report rather than when the review ends, so a finished review is learned by
-invoking the entry again — never by assuming that a quiet return means nothing
-happened.
+invoking the same resolved `scripts/review-<selected-terminal>` entry again —
+never by assuming that a quiet return means nothing happened.
 
 The arming invocation begins the **poller** chain. Retain its returned `run`
 value as opaque identity. Every later poller is the same selected entry invoked
-with `--poll-question --run <run>`. Pass that same `--run <run>` to every answer
-and decline command so concurrent armed reviews never depend on inference.
+as `scripts/review-<selected-terminal> --poll-question --run <run>` (path relative
+to this skill's directory, resolved to the same absolute executable). Pass that same
+`--run <run>` to every answer and decline command so concurrent armed reviews never depend on inference.
 
 **While an armed review has not returned `result` or `aborted`, ensure exactly
 one poller supported by the invoking runtime is running; after either terminal
@@ -375,7 +382,9 @@ different mechanism.
 
 ### Codex poller
 
-For each common poller command, start one `functions.exec` task. Inside that
+For each common poller command using the resolved
+`scripts/review-<selected-terminal>` path relative to this skill's directory and
+the existing leg arguments, start one `functions.exec` task. Inside that
 task, run the command as its foreground helper with `tools.exec_command` and
 `yield_time_ms: 30000`. If it exits inside that yield, return its JSON. If it
 yields a `session_id`, keep the same outer task alive and wait on that helper
@@ -392,7 +401,8 @@ Never let the outer task end at a shell-session yield.
 
 ### Claude Code poller
 
-Invoke the selected entry with the Bash tool's `run_in_background: true`.
+Invoke the selected entry at the resolved `scripts/review-<selected-terminal>`
+path relative to this skill's directory with the Bash tool's `run_in_background: true`.
 Retain the returned background task ID as the running poller. Claude Code's
 proactive completion notification wakes the root session; after that
 notification, read the task's output file once for the complete receiver JSON.
@@ -409,7 +419,8 @@ this poller's background+notify wake.
 
 ### Claude Code sub-agent/teammate poller
 
-Invoke the selected entry with the Bash tool's `run_in_background: true` and
+Invoke the selected entry at the resolved `scripts/review-<selected-terminal>`
+path relative to this skill's directory with the Bash tool's `run_in_background: true` and
 capture the returned `bash_id`. On a bounded schedule, call
 `BashOutput(bash_id=...)` only to check `status` — never to extract output
 while `status` is `"running"`, since that call drains output already
@@ -431,11 +442,14 @@ supported runtime implementation, then start the arming invocation as its
 poller.
 
 When a receiver returns `question`, immediately start its replacement through
-the selected runtime implementation with `--poll-question --run <run>` —
+the selected runtime implementation with
+`scripts/review-<selected-terminal> --poll-question --run <run>` (the same resolved
+skill-relative executable) —
 **before** reading the Artifact, composing the answer, or forwarding it.
 Copy the returned opaque `questionId` without parsing it.
 Then answer from the pinned Artifact and run a separate, short command:
-`--answer-question --for-question <questionId> --text-file <file> --run <run>`.
+`scripts/review-<selected-terminal> --answer-question --for-question <questionId> --text-file <file> --run <run>`
+(the same selected executable, resolved relative to this skill's directory).
 The answer command ends when the review consumes that answer; it never becomes
 the next receiver. Keep exactly one receiver continuously active until it
 returns `result` or `aborted`.
@@ -445,7 +459,8 @@ the replacement receiver waits instead of returning that question again while
 its answer is outstanding. If a receiver is killed before successful return,
 the cursor was not advanced and a replacement safely redelivers the question.
 If answer forwarding is killed before publishing a valid answer, invoke the
-same answer command again; interrupted bytes are not a claim. If it is killed
+same resolved `scripts/review-<selected-terminal> --answer-question --for-question <questionId> --text-file <file> --run <run>`
+command again (path relative to this skill's directory); interrupted bytes are not a claim. If it is killed
 after the answer file is valid, the reviewer can still consume it and the
 already-running receiver remains live. Do not start a second receiver during
 recovery.
@@ -456,11 +471,14 @@ Each invocation returns exactly one JSON object naming a `state`. Act on it:
   answer from the pinned Artifact at the reported `artifact` path, write the
   answer to one private text file, and invoke the entry once with the exact
   returned identity:
-  `--answer-question --for-question <questionId> --text-file <file> --run <run>`.
+  `scripts/review-<selected-terminal> --answer-question --for-question <questionId> --text-file <file> --run <run>`
+  (the same selected executable, resolved relative to this skill's directory).
 - `answered` — the review took the answer. Leave the already-running receiver
   alone; do not invoke another poll.
 - `waiting` — nothing is decided yet and the review is untouched; only a leg
-  you bounded with an explicit `--machine-budget` reports this. Invoke again.
+  you bounded with an explicit `--machine-budget` reports this. Invoke the same resolved
+  `scripts/review-<selected-terminal>` path relative to this skill's directory
+  again with the same poll arguments and explicit machine budget.
   This never means the review is idle and never means it is over.
 - `abandoned` — the reviewer left the question before the answer arrived. The
   review is unaffected. Leave the already-running receiver alone.
@@ -475,17 +493,22 @@ Each invocation returns exactly one JSON object naming a `state`. Act on it:
 - `aborted` — the review ended with no result. Report the returned `reason` and
   `hostReason` and stop without another host or launch.
 
-Every replacement receiver uses `--poll-question --run <run>` and nothing else.
+Every replacement receiver uses
+`scripts/review-<selected-terminal> --poll-question --run <run>` and nothing else
+(the same resolved path relative to this skill's directory).
 Start it only when the receiver chain begins or immediately after `question`,
 as described above; an `answered`, `abandoned`, `declined`, or `expired`
 response from answer forwarding never starts another receiver. A receiver with
 an explicit `--machine-budget <seconds>` may return `waiting`; immediately
-start its replacement through the same runtime implementation. The normal
+start its replacement through the same runtime implementation using the resolved
+`scripts/review-<selected-terminal>` path relative to this skill's directory. The normal
 receiver omits that bound and wakes the root session once per event.
 Answer with
-`--answer-question --for-question <questionId> --text-file <file> --run <run>` and nothing
+`scripts/review-<selected-terminal> --answer-question --for-question <questionId> --text-file <file> --run <run>`
+(the same selected executable, resolved relative to this skill's directory) and nothing
 else. Give up on a question with
-`--decline-question --for-question <questionId> --reason <text> --run <run>` and nothing
+`scripts/review-<selected-terminal> --decline-question --for-question <questionId> --reason <text> --run <run>`
+(the same resolved path relative to this skill's directory) and nothing
 else, rather than leaving a reviewer watching for an answer that is not coming.
 Both identities are opaque: retain the returned `run` and copy the exact
 `questionId` returned with that question; never derive, split, validate, or
@@ -503,7 +526,8 @@ alongside `--allow-question` is refused by name before anything is created.
 
 ## Report the returned record
 
-The bundled `validate-one-file-result` executable is the only result authority.
+The bundled `scripts/validate-one-file-result` executable (path relative to this
+skill's directory) is the only result authority.
 The selected entry calls its preserved four-argument interface once for
 Markdown or its explicit package profile once for a canonical Briefing. Do not
 author or run a decoder, parser, or independent validator in the skill.
