@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+invocation_name=manual
+invocation_async=1
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=invocation-common
+source "$script_dir/invocation-common"
+
+for argument in "$@"; do
+  case $argument in
+    --allow-question | --question-run)
+      invocation_preflight_fail 'manual cannot serve an armed review: the command it prints would not reach the reviewer'
+      ;;
+  esac
+done
+
+invocation_host_preflight() { :; }
+
+invocation_host_dispatch() {
+  invocation_residue='; operation: print command'
+  printf 'Run this in any terminal you already have open:\n\n  %q\n\nWaiting for the review result...\n' \
+    "$invocation_capsule" >&2
+}
+
+invocation_main "$@"

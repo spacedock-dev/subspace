@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+invocation_name=paseo
+invocation_async=1
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=invocation-common
+source "$script_dir/invocation-common"
+
+entry_args=("$@")
+paseo_mode=terminal
+paseo_reason=
+
+paseo_use_manual() {
+  local argument
+  for argument in "${entry_args[@]}"; do
+    [[ $argument != --question-run ]] || \
+      invocation_preflight_fail "Paseo is unavailable ($1) and manual cannot serve an armed review"
+  done
+  paseo_mode=manual
+  paseo_reason=$1
+}
+
+paseo_first_line() {
+  printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013-\037\177' | head -n 1 | LC_ALL=C head -c 200
+}
+
+invocation_host_preflight() {
+  local listing listing_file listing_pid status
+  [[ -n ${PASEO_TERMINAL_ID:-}${PASEO_AGENT_ID:-} ]] || { paseo_use_manual 'not inside Paseo'; return 0; }
+  paseo_bin=${PASEO_CLI:-paseo}
+  if [[ $paseo_bin != */* ]]; then
+    paseo_bin=$(command -v -- "$paseo_bin") || { paseo_use_manual 'Paseo CLI is not installed'; return 0; }
+  fi
+  [[ -x $paseo_bin && ! -d $paseo_bin ]] || { paseo_use_manual "Paseo CLI is not executable: $paseo_bin"; return 0; }
+  jq_bin=$(command -v jq) || { paseo_use_manual 'jq is required'; return 0; }
+  if [[ -n ${PASEO_WORKSPACE_ID:-} ]]; then
+    paseo_scope=(--workspace "$PASEO_WORKSPACE_ID")
+  else
+    paseo_scope=(--cwd "${PASEO_AGENT_CWD:-$PWD}")
+  fi
+  listing_file=$invocation_dir/paseo-ls.out
+  "$paseo_bin" terminal ls "${paseo_scope[@]}" --json > "$listing_file" 2>&1 &
+  listing_pid=$!
+  for _ in $(seq 1 30); do
+    kill -0 "$listing_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$listing_pid" 2>/dev/null; then
+    kill "$listing_pid" 2>/dev/null || true
+    wait "$listing_pid" 2>/dev/null || true
+    rm -f -- "$listing_file"
+    paseo_use_manual 'terminal ls did not answer within 3 seconds'
+    return 0
+  fi
+  set +e
+  wait "$listing_pid"
+  status=$?
+  set -e
+  listing=$(<"$listing_file")
+  rm -f -- "$listing_file"
+  if [[ $status != 0 ]] || ! "$jq_bin" -e 'type == "array"' <<< "$listing" >/dev/null 2>&1; then
+    paseo_use_manual "terminal ls failed with status $status: $(paseo_first_line "$listing")"
+  fi
+}
+
+invocation_host_dispatch() {
+  local created capsule_command
+  if [[ $paseo_mode == manual ]]; then
+    invocation_residue='; operation: print command'
+    printf 'Paseo could not open a terminal (%s).\nRun this in any terminal you already have open:\n\n  %q\n\nWaiting for the review result...\n' \
+      "$paseo_reason" "$invocation_capsule" >&2
+    return 0
+  fi
+  invocation_residue='; operation: terminal create'
+  created=$("$paseo_bin" terminal create "${paseo_scope[@]}" --name subspace-review --json 2>/dev/null) || return 1
+  owned=$("$jq_bin" -er '.id | select(type == "string" and length > 0)' <<< "$created") || return 1
+  invocation_residue="; operation: send-keys; possible terminal: $owned"
+  printf -v capsule_command 'exec %q' "$invocation_capsule"
+  "$paseo_bin" terminal send-keys "$owned" -l "$capsule_command" >/dev/null 2>&1 || return $?
+  "$paseo_bin" terminal send-keys "$owned" Enter >/dev/null 2>&1
+}
+
+invocation_host_complete() {
+  local killed
+  [[ $paseo_mode == terminal && -n ${owned:-} ]] || return 0
+  killed=$("$paseo_bin" terminal kill "$owned" --json 2>&1) && return 0
+  "$jq_bin" -e '.error.code == "TERMINAL_NOT_FOUND"' <<< "$killed" >/dev/null 2>&1 && return 0
+  invocation_note_host_failure "owned terminal cleanup failed: $owned" 1
+  return 1
+}
+
+invocation_main "$@"

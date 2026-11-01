@@ -13,10 +13,11 @@ invocation_host_preflight() {
   [[ -d $app ]] || invocation_preflight_fail "Apple Terminal is unavailable at $app"
   [[ -x /usr/bin/osascript ]] || invocation_preflight_fail '/usr/bin/osascript is unavailable'
   [[ -x /usr/bin/plutil ]] || invocation_preflight_fail '/usr/bin/plutil is unavailable'
-  local bundle status
-  bundle=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null) || {
+  local bundle status reason
+  bundle=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>&1) || {
     status=$?
-    invocation_preflight_fail "operation read bundle identity failed with status $status" "$status"
+    reason=$(printf '%s' "$bundle" | LC_ALL=C tr -d '\000-\010\013-\037\177' | head -n 1 | LC_ALL=C head -c 200)
+    invocation_preflight_fail "operation read bundle identity failed with status $status: $reason; the manual terminal prints a command to run in any open terminal" "$status"
   }
   [[ $bundle == com.apple.Terminal ]] || \
     invocation_preflight_fail "Apple Terminal bundle id is $bundle, expected com.apple.Terminal"

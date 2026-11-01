@@ -3,7 +3,10 @@
 Review one Markdown file in your terminal.
 
 Subspace includes a companion agent skill that launches its focused reader in
-Zellij, tmux, CMUX, Herdr, Ghostty, or Apple Terminal. It sends comments and
+Zellij, tmux, CMUX, Herdr, Ghostty, Apple Terminal, or a Paseo terminal. When
+the Paseo CLI is blocked, or you name `manual`, it prints one command to run in
+any terminal you already have open. Naming no terminal, Claude Code and Codex
+find yours by reading a fixed list of terminal variables. It sends comments and
 suggested edits directly back to the invoking agent, attached to exact text.
 
 ![A Markdown file in Subspace's focused reader](assets/review-one-file.gif)

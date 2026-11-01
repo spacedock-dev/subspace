@@ -1,6 +1,6 @@
 ---
 name: r
-description: Review one readable Markdown file for feedback or present one canonical Briefing package or prepared Spacedock gate room in the native Subspace TUI through Zellij, tmux, Herdr, CMUX, Ghostty, or Apple Terminal.
+description: Review one readable Markdown file for feedback or present one canonical Briefing package or prepared Spacedock gate room in the native Subspace TUI through Zellij, tmux, Herdr, CMUX, Ghostty, Apple Terminal, or Paseo, or through a printed command to run in any open terminal. With no terminal named, Codex and Claude Code read the caller's terminal signals with one fixed read-only command.
 ---
 
 # Review a file or canonical Briefing
@@ -16,7 +16,7 @@ gate <room> [terminal]
 ```
 
 The terminal is
-`zellij`, `tmux`, `herdr`, `cmux`, `ghostty`, or `apple-terminal`. Reject every
+`zellij`, `tmux`, `herdr`, `cmux`, `ghostty`, `apple-terminal`, `paseo`, or `manual`. Reject every
 other name and every extra argument before any terminal probe or launch. The
 terminal chooses presentation wiring only; never pass its name to an entry or
 the TUI. The explicit `--review-v1` token selects package mode. Never infer a
@@ -82,9 +82,10 @@ exact release label is consulted.
 ## Select one terminal
 
 An explicit terminal wins. Otherwise inspect inherited caller signals without
-running a command — except the one Codex-only detector defined below — and
+running a command — except the one detector defined below, which only Codex and
+Claude Code may run — and
 select the first family present in this fixed order:
-Zellij, tmux, Herdr, CMUX, Ghostty, then Apple Terminal.
+Zellij, tmux, Herdr, CMUX, Ghostty, Apple Terminal, then Paseo.
 
 1. Zellij signals are `ZELLIJ_SESSION_NAME` and `ZELLIJ_PANE_ID`.
 2. tmux signals are `TMUX` and `TMUX_PANE`.
@@ -92,21 +93,24 @@ Zellij, tmux, Herdr, CMUX, Ghostty, then Apple Terminal.
 4. CMUX signals are `CMUX_WORKSPACE_ID` and `CMUX_SURFACE_ID`.
 5. Ghostty's signal is `TERM_PROGRAM=ghostty` on macOS.
 6. Apple Terminal's signal is `TERM_PROGRAM=Apple_Terminal` on macOS.
+7. Paseo's signal is a non-empty `PASEO_TERMINAL_ID` or `PASEO_AGENT_ID`, on any
+   operating system. Either one selects `paseo`; it has no partial form.
 
 For the first family with any signal present, require all of its listed signals
-and specified values. A partial family stops with the missing signal; it never
+and specified values (Paseo needs one). A partial family stops with the missing signal; it never
 falls through. Complete signals select a terminal but do not prove its host is
 healthy. A missing binary, unavailable operation, ambiguous caller, inaccessible
 server, malformed probe, or broken selected host also stops without trying a
 later terminal.
 
-Codex alone may take one further step before that no-family default. A
+Codex and Claude Code alone may take one further step before that no-family
+default, because a Claude Code model's context lists no environment variable. A
 signal name counts as appearing only under the same test used above: a
-non-empty value for one of the eight identifiers, or a `TERM_PROGRAM` of
+non-empty value for one of the ten identifiers, or a `TERM_PROGRAM` of
 exactly `ghostty` or `Apple_Terminal`. An empty value or an unrecognized
-`TERM_PROGRAM` value does not count as appearing. When none of the nine
-appear by that test in Codex's runtime-visible context, it may issue exactly
-one read-only command that reports only those fixed names.
+`TERM_PROGRAM` value does not count as appearing. When none of the eleven
+appear by that test in the runtime-visible context of Codex or Claude Code,
+it may issue exactly one read-only command that reports only those fixed names.
 
 ```sh
 /bin/sh -c '
@@ -119,11 +123,13 @@ if [ -z "${HERDR_ENV:-}" ]; then printf "HERDR_ENV=absent\n"; elif [ "$HERDR_ENV
 [ -n "${CMUX_WORKSPACE_ID:-}" ] && printf "CMUX_WORKSPACE_ID=present\n" || printf "CMUX_WORKSPACE_ID=absent\n"
 [ -n "${CMUX_SURFACE_ID:-}" ] && printf "CMUX_SURFACE_ID=present\n" || printf "CMUX_SURFACE_ID=absent\n"
 if [ -z "${TERM_PROGRAM:-}" ]; then printf "TERM_PROGRAM=absent\n"; elif [ "$TERM_PROGRAM" = ghostty ]; then printf "TERM_PROGRAM=ghostty\n"; elif [ "$TERM_PROGRAM" = Apple_Terminal ]; then printf "TERM_PROGRAM=Apple_Terminal\n"; else printf "TERM_PROGRAM=other\n"; fi
+[ -n "${PASEO_TERMINAL_ID:-}" ] && printf "PASEO_TERMINAL_ID=present\n" || printf "PASEO_TERMINAL_ID=absent\n"
+[ -n "${PASEO_AGENT_ID:-}" ] && printf "PASEO_AGENT_ID=present\n" || printf "PASEO_AGENT_ID=absent\n"
 '
 ```
 
-The output is exactly nine LF-terminated ASCII lines in the shown order and
-no stderr: the seven identifier names accept only `present|absent`,
+The output is exactly eleven LF-terminated ASCII lines in the shown order and
+no stderr: the nine identifier names accept only `present|absent`,
 `HERDR_ENV` accepts only `1|other|absent`, and `TERM_PROGRAM` accepts only
 `ghostty|Apple_Terminal|other|absent`. Empty values normalize to `absent`;
 `other` discloses only that a fixed value did not match. Herdr's family is
@@ -133,14 +139,14 @@ reached. Ghostty and Apple Terminal are each a single exact-value signal
 (`TERM_PROGRAM=ghostty` and `TERM_PROGRAM=Apple_Terminal`), so
 `TERM_PROGRAM=other` matches neither and — like `TERM_PROGRAM=absent` — is
 treated as no signal for either family; it never stops the invocation on its
-own. No raw environment value, unrelated name, OS fact, path, or shell state
-can enter output. Claude and every other runtime never issue this command
-and keep inspecting runtime-visible context directly.
+own. Either Paseo line reading `present` is a complete Paseo family. No raw environment value, unrelated name, OS fact, path, or shell state
+can enter output. Every other runtime never issues this command
+and keeps inspecting runtime-visible context directly.
 
-Codex then applies the family rule above to this normalized map exactly
+Codex and Claude Code then apply the family rule above to this normalized map exactly
 once: a complete family selects that terminal; a partial or invalid family
 stops with the missing or invalid signal, never falling through to a later
-family; when no family matches — nine `absent` statuses, or eight `absent`
+family; when no family matches — eleven `absent` statuses, or ten `absent`
 statuses with `TERM_PROGRAM=other` — fall through to the no-family default
 below. Any tool refusal, nonzero status, stderr, or output outside this
 closed grammar also stops before selection or launch and names the failed
@@ -161,6 +167,17 @@ preflight failure, Automation denial, launch or post-launch uncertainty, and
 result, delivery, or cleanup failure all stop without re-entering selection,
 retrying the entry, or opening another surface.
 
+`paseo` opens one terminal through the Paseo CLI in the caller's workspace.
+Before it opens anything, its entry checks once that a Paseo signal is present,
+that the Paseo CLI runs, and that `paseo terminal ls` answers. When any check
+fails, as under a default agent-safehouse profile that blocks the CLI or the
+daemon state, the same entry switches to `manual` inside its one call: it
+opens nothing, prints the reason and the command for the reviewer to run, and
+waits. That switch is the only fallback in this skill. It happens before any
+surface exists, so two surfaces are never opened. `manual`, named explicitly or
+reached this way, opens no surface at all and refuses `--allow-question`,
+because the command it prints would not reach the reviewer.
+
 ## Permission and invocation
 
 Obtain host permission before any probe of the selected terminal. Explain once
@@ -170,7 +187,7 @@ interactive review surface, wait for its result, have the selected entry invoke
 `scripts/validate-one-file-result` (relative to this skill's directory) exactly once, return the trusted
 bytes, and clean only successful transient scratch. State
 that it performs no network, package-manager, or repository write and no retry,
-fallback, Briefing construction, workflow routing, or suggestion application.
+fallback (beyond `paseo`'s switch to `manual` before it opens anything), Briefing construction, workflow routing, or suggestion application.
 Do not ask a separate natural-language yes/no question.
 
 For an automatic Apple Terminal selection, also explain that the fixed entry
@@ -178,6 +195,13 @@ checks the system Terminal app and AppleScript prerequisites, asks macOS to let
 the invoking host automate Terminal, opens one fresh targetless tab, and then
 follows the same wait, validation, delivery, and cleanup boundary. It never
 retries, falls back, or opens a second surface.
+
+For `paseo`, also explain that the fixed entry runs the Paseo CLI to list
+terminals, create one in the caller's workspace, send it the private capsule
+command, and close only that terminal; when the CLI cannot run, it opens nothing
+and prints a command for the reviewer instead. For `manual`, explain that it
+opens nothing and prints one command for the reviewer to run in a terminal they
+already have open.
 
 Use the host's supported access boundary. Manual permission mode lets the host
 show its one approval dialog for the selected command. Automatic permission
@@ -207,7 +231,32 @@ implementations* below) and use it to keep that one call and its result alive
 until it returns. A nonzero return after launch includes a recoverable
 scratch path; report it and stop without another host or launch.
 
-An armed review is the single exception. `--allow-question` cannot finish inside
+Showing a printed command is the first of two exceptions. `manual`, and `paseo`
+when it switches to `manual`, print to stderr while the one call is still waiting:
+
+```text
+Run this in any terminal you already have open:
+
+  <absolute capsule path>
+
+Waiting for the review result...
+```
+
+The reviewer cannot act until you show it, and the call does not end until
+they do. After launching either entry, give it five seconds to print, then
+read that call's own output: the background output file directly, never
+`BashOutput` while the task runs. If that read finds no printed block and the
+call has not ended, wait five more seconds and read once more, and no further. Show the command to the reviewer verbatim, in
+a fenced block, and say it must be pasted into a terminal they already have
+open. Those reads run no command and are not a second call; the wait for the one
+call continues unchanged. On Codex the look is the first `tools.exec_command`
+yield: set `yield_time_ms: 5000` for these two entries, show the printed block
+from that yielded output (if it holds none, yield once more at the same
+interval), then wait on the same `session_id` as the Codex poller does. The block is not part of the returned record. If neither
+read finds a block, `paseo` opened its own terminal: say nothing more and keep
+waiting.
+
+An armed review is the second exception. `--allow-question` cannot finish inside
 one blocking call, because the session that has to answer is blocked inside it,
 so that journey is a sequence of invocations of the same selected entry as
 described in *Answer questions during a review*. It authorizes nothing else:
@@ -285,6 +334,10 @@ link was revoked or expired. Exit 1 prints the reason.
   its private child completion.
 - Apple Terminal uses targetless `do script`, activates only after the new tab
   exists, and reports Automation error `-1743` without fallback.
+- Paseo creates one terminal in the caller's workspace (`PASEO_WORKSPACE_ID`, or
+  the agent's working directory), submits the private child capsule to it, then
+  closes it; a terminal that already closed itself counts as closed.
+- Manual creates nothing and prints the capsule command for the reviewer.
 
 Each entry retains its host-specific prerequisite and caller-identity checks.
 The shared private lifecycle contains no terminal selection or host command.
