@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shasum ships with perl, which FreeBSD's base system does not carry; sha256sum
+# is in that base system. Every host that had shasum keeps using it.
+sha256_tool() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$@"
+  else
+    PATH=$PATH:/sbin sha256sum "$@"
+  fi
+}
+
 # GNU stat reads -f as --file-system and dumps that to stdout; gating the BSD
 # form on its own result keeps the dump out of the caller's substitution.
 file_mode() {
@@ -38,13 +48,13 @@ if [[ ${1:-} == --review-v1 ]]; then
     [[ $path == /* && -f $path && ! -L $path ]] || exit 20
   done
   [[ $revision =~ ^sha256:[0-9a-f]{64}$ ]] || exit 20
-  [[ sha256:$(shasum -a 256 "$package" | awk '{print $1}') == "$revision" ]] || exit 20
+  [[ sha256:$(sha256_tool "$package" | awk '{print $1}') == "$revision" ]] || exit 20
   cmp -s -- "$result" "$capture" || exit 20
   jq -e '.exit == 0 and (.argvSha256 | test("^sha256:[0-9a-f]{64}$")) and
     (keys | sort) == (["argvSha256","exit"] | sort)' "$child_exit" >/dev/null
   argv=${child_exit%/*}/argv.json
   [[ -f $argv && ! -L $argv ]] || exit 20
-  argv_digest=sha256:$(shasum -a 256 "$argv" | awk '{print $1}')
+  argv_digest=sha256:$(sha256_tool "$argv" | awk '{print $1}')
   [[ $(jq -r '.argvSha256' "$child_exit") == "$argv_digest" ]] || exit 20
   jq -e --arg package "$package" --arg actor "$actor" --arg mode "$declared_mode" \
     --arg result "$result" --arg log "$log" --arg inventory "$inventory" '
@@ -151,11 +161,11 @@ cmp -s -- "$result" "$capture" || exit 20
 
 result_mode=$(file_mode "$result") || exit 20
 [[ $result_mode == 600 ]] || exit 20
-briefing_hash=$(printf 'subspace:one-file-invocation:v1\0%s' "$result" | shasum -a 256 | awk '{print $1}')
+briefing_hash=$(printf 'subspace:one-file-invocation:v1\0%s' "$result" | sha256_tool | awk '{print $1}')
 briefing=briefing:single-file:$(printf '%.32s' "$briefing_hash")
 result_revision=$(jq -er '.artifact.rev | select(type == "string")' "$capture") || exit 20
 if [[ $result_revision != "$revision" ]]; then
-  [[ -f $artifact && ! -L $artifact ]] && current_revision=sha256:$(shasum -a 256 "$artifact" | awk '{print $1}') || exit 20
+  [[ -f $artifact && ! -L $artifact ]] && current_revision=sha256:$(sha256_tool "$artifact" | awk '{print $1}') || exit 20
   [[ $result_revision == "$current_revision" ]] && revision=$result_revision || exit 20
 fi
 
@@ -255,7 +265,7 @@ if [[ $(jq -r '.status' "$capture") == open ]]; then
   briefing_mode=$(file_mode "$briefing_path") || exit 20
   snapshot_mode=$(file_mode "$snapshot_path") || exit 20
   [[ $briefing_mode == 600 && $snapshot_mode == 600 ]] || exit 20
-  snapshot_revision=sha256:$(shasum -a 256 "$snapshot_path" | awk '{print $1}')
+  snapshot_revision=sha256:$(sha256_tool "$snapshot_path" | awk '{print $1}')
   [[ $snapshot_revision == "$revision" ]] || exit 20
   jq -s -e --arg briefing "$briefing" --arg artifact "$artifact" --arg revision "$revision" '
     length == 1 and (.[0] |

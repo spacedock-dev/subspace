@@ -27,7 +27,7 @@ Classify in this order, stopping at the first reason that matches:
 2. **Wrong architecture.** A resolved `subspace-tui` exists but executing it
    fails at the loader — `cannot execute binary file` or an ENOENT raised by
    the loader. Name the reason as an architecture mismatch: the binary's
-   architecture against this host's `<darwin|linux>/<amd64|arm64>`. Pin that
+   architecture against this host's `<darwin|freebsd|linux>/<amd64|arm64>`. Pin that
    named reason, not the OS error text — the text varies by platform and
    shell, and macOS Rosetta can mask the class. The remedy is the build that
    matches this host, resolved through the canonical latest-release URL
@@ -43,7 +43,7 @@ Classify in this order, stopping at the first reason that matches:
    - **macOS with Homebrew** (`uname -s` is `Darwin` and `command -v brew`
      succeeds): `brew install spacedock-dev/tap/subspace-beta`. Homebrew is
      the primary macOS path.
-   - **Linux (amd64 or arm64), or macOS without Homebrew:** the direct-binary
+   - **Linux or FreeBSD (amd64 or arm64), or macOS without Homebrew:** the direct-binary
      installer, which resolves the latest release through the canonical URL
      `http://spacedock.md/latest-release/subspace`, verifies the release's
      `checksums.txt` before anything is placed, and installs into
@@ -54,7 +54,7 @@ Classify in this order, stopping at the first reason that matches:
      ```
 
    - **Any other OS or architecture:** refuse by name. `subspace-tui` ships
-     for darwin and linux on amd64 and arm64 only; never fall back silently
+     for darwin, freebsd and linux on amd64 and arm64 only; never fall back silently
      to Homebrew or a source build.
 
    For either supported-platform remedy, first decide whether this runtime

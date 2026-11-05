@@ -6,7 +6,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace/main/install.sh | sh
 #
 # Behavior:
-#   * Detects OS (darwin|linux) and arch (amd64|arm64) from uname.
+#   * Detects OS (darwin|freebsd|linux) and arch (amd64|arm64) from uname.
 #   * Resolves the asset to fetch from one of two sources, same extract/verify/
 #     install path for both:
 #       - SUBSPACE_INSTALL_FROM unset (production): the release named by the
@@ -46,13 +46,14 @@ die() { err "$*"; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
-# detect_os maps `uname -s` to the goreleaser goos token. Only darwin and linux
+# detect_os maps `uname -s` to the goreleaser goos token. Only darwin, freebsd and linux
 # ship release tarballs; anything else is unsupported here.
 detect_os() {
 	case "$(uname -s)" in
 		Darwin) echo darwin ;;
 		Linux) echo linux ;;
-		*) die "unsupported OS $(uname -s); Subspace ships darwin/linux only" ;;
+		FreeBSD) echo freebsd ;;
+		*) die "unsupported OS $(uname -s); Subspace ships darwin/freebsd/linux only" ;;
 	esac
 }
 
@@ -67,7 +68,7 @@ detect_arch() {
 }
 
 # sha256_of prints the lowercase hex sha256 of a file, using whichever tool the
-# host carries: sha256sum (Linux), or `shasum -a 256` (macOS).
+# host carries: sha256sum (Linux, FreeBSD), or `shasum -a 256` (macOS).
 sha256_of() {
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "$1" | awk '{print $1}'

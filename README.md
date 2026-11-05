@@ -38,6 +38,22 @@ Add `~/.local/bin` to your `PATH` if it is not already there.
 sr path/to/file.md
 ```
 
+### FreeBSD
+
+Subspace publishes binaries for FreeBSD on amd64 and arm64. They are
+cross-compiled on Linux. We tested them by hand when FreeBSD support was added,
+on FreeBSD 14.5 (arm64) and 15.1 (amd64 and arm64), including a review through
+tmux. CI checks on every change that they build. It does not run them on
+FreeBSD, so a bug that only appears on FreeBSD can reach a release.
+
+FreeBSD's base system does not have `curl`, `bash`, `jq` or `tmux`. Install them
+as root, then use the same installer:
+
+```sh
+pkg install curl bash jq tmux
+curl -fsSL https://raw.githubusercontent.com/spacedock-dev/subspace/main/install.sh | sh
+```
+
 ### Install the companion agent skill
 
 In Claude Code, add the marketplace and install the plugin:

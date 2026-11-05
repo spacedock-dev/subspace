@@ -9,7 +9,7 @@ for external Go modules linked into the named Subspace release binaries.
 Module: github.com/atotto/clipboard
 Version: v0.1.4
 Sum: h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1471 bytes) -----
@@ -48,7 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 Module: github.com/aymanbagabas/go-osc52/v2
 Version: v2.0.1
 Sum: h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1070 bytes) -----
@@ -81,7 +81,7 @@ SOFTWARE.
 Module: github.com/charmbracelet/bubbles
 Version: v1.0.0
 Sum: h1:12J8/ak/uCZEMQ6KU7pcfwceyjLlWsDLAxB5fXonfvc=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1080 bytes) -----
@@ -114,7 +114,7 @@ SOFTWARE.
 Module: github.com/charmbracelet/bubbletea
 Version: v1.3.10
 Sum: h1:otUDHWMMzQSB0Pkc87rm691KZ3SWa4KUlvF9nRvCICw=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1080 bytes) -----
@@ -147,7 +147,7 @@ SOFTWARE.
 Module: github.com/charmbracelet/colorprofile
 Version: v0.4.1
 Sum: h1:a1lO03qTrSIRaK8c3JRxJDZOvhvIeSco3ej+ngLk1kk=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1080 bytes) -----
@@ -180,7 +180,7 @@ SOFTWARE.
 Module: github.com/charmbracelet/lipgloss
 Version: v1.1.0
 Sum: h1:vYXsiLHVkK7fp74RkV7b2kq9+zDLoEU4MZoFqR/noCY=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1080 bytes) -----
@@ -213,7 +213,7 @@ SOFTWARE.
 Module: github.com/charmbracelet/x/ansi
 Version: v0.11.6
 Sum: h1:GhV21SiDz/45W9AnV2R61xZMRri5NlLnl6CVF7ihZW8=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1076 bytes) -----
@@ -246,7 +246,7 @@ SOFTWARE.
 Module: github.com/charmbracelet/x/cellbuf
 Version: v0.0.15
 Sum: h1:ur3pZy0o6z/R7EylET877CBxaiE1Sp1GMxoFPAIztPI=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1076 bytes) -----
@@ -279,7 +279,7 @@ SOFTWARE.
 Module: github.com/charmbracelet/x/term
 Version: v0.2.2
 Sum: h1:xVRT/S2ZcKdhhOuSP4t5cLi5o+JxklsoEObBSgfgZRk=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1076 bytes) -----
@@ -312,7 +312,7 @@ SOFTWARE.
 Module: github.com/clipperhouse/displaywidth
 Version: v0.9.0
 Sum: h1:Qb4KOhYwRiN3viMv1v/3cTBlz3AcAZX3+y9OLhMtAtA=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1069 bytes) -----
@@ -345,7 +345,7 @@ SOFTWARE.
 Module: github.com/clipperhouse/stringish
 Version: v0.1.1
 Sum: h1:+NSqMOr3GR6k1FdRhhnXrLfztGzuG+VuFDfatpWHKCs=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1069 bytes) -----
@@ -378,7 +378,7 @@ SOFTWARE.
 Module: github.com/clipperhouse/uax29/v2
 Version: v2.5.0
 Sum: h1:x7T0T4eTHDONxFJsL94uKNKPHrclyFI0lm7+w94cO8U=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1069 bytes) -----
@@ -411,7 +411,7 @@ SOFTWARE.
 Module: github.com/cyberphone/json-canonicalization
 Version: v0.0.0-20241213102144-19d51d7fe467
 Sum: h1:uX1JmpONuD549D73r6cgnxyUu18Zb7yHAy5AYU0Pm4Q=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (600 bytes) -----
@@ -436,7 +436,7 @@ Legal sources: LICENSE
 Module: github.com/lucasb-eyer/go-colorful
 Version: v1.3.0
 Sum: h1:2/yBRLdWBZKrf7gB40FoiKfAWYQ0lqNcbuQwVHXptag=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1055 bytes) -----
@@ -455,7 +455,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 Module: github.com/mattn/go-isatty
 Version: v0.0.20
 Sum: h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1099 bytes) -----
@@ -476,7 +476,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 Module: github.com/mattn/go-runewidth
 Version: v0.0.24
 Sum: h1:cpokDiIn0MGnhdHwuWnJBITySJ20QyNGnY2kR/ay2DU=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1085 bytes) -----
@@ -509,7 +509,7 @@ SOFTWARE.
 Module: github.com/muesli/ansi
 Version: v0.0.0-20230316100256-276c6243b2f6
 Sum: h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1079 bytes) -----
@@ -542,7 +542,7 @@ SOFTWARE.
 Module: github.com/muesli/cancelreader
 Version: v0.2.2
 Sum: h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELUXHmA=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1095 bytes) -----
@@ -575,7 +575,7 @@ SOFTWARE.
 Module: github.com/muesli/termenv
 Version: v0.16.0
 Sum: h1:S5AlUN9dENB57rsbnkPyfdGuWIlkmzJjbFf0Tf5FWUc=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1079 bytes) -----
@@ -608,7 +608,7 @@ SOFTWARE.
 Module: github.com/rivo/uniseg
 Version: v0.4.7
 Sum: h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE.txt
 
 ----- BEGIN LICENSE.txt (1072 bytes) -----
@@ -641,7 +641,7 @@ SOFTWARE.
 Module: github.com/spacedock-dev/mermaidtext
 Version: v0.1.1
 Sum: h1:r0cIfuoNsxkwMTzf8Xm4KVNlyJH1szgJwHEaK3IOlZA=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE, THIRD_PARTY_NOTICES.md
 
 ----- BEGIN LICENSE (11388 bytes) -----
@@ -901,7 +901,7 @@ crate version by `testdata/unicode-width-0.2.0/oracle/gen.sh`, and
 Module: github.com/xo/terminfo
 Version: v0.0.0-20220910002029-abceb7e1c41e
 Sum: h1:JVG44RsyaB9T2KIHavMF/ppJZNG9ZpyihvCd0w101no=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1078 bytes) -----
@@ -934,7 +934,7 @@ SOFTWARE.
 Module: github.com/yuin/goldmark
 Version: v1.8.2
 Sum: h1:kEGpgqJXdgbkhcOgBxkC0X0PmoPG1ZyoZ117rDVp4zE=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE
 
 ----- BEGIN LICENSE (1071 bytes) -----
@@ -967,7 +967,7 @@ SOFTWARE.
 Module: golang.org/x/sys
 Version: v0.38.0
 Sum: h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc=
-Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64
+Targets: darwin/amd64, darwin/arm64, freebsd/amd64, freebsd/arm64, linux/amd64, linux/arm64
 Legal sources: LICENSE, PATENTS
 
 ----- BEGIN LICENSE (1453 bytes) -----

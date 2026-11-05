@@ -19,10 +19,11 @@ command and stop. Ask before installing:
 
 A plugin install gives this skill, not the program. Before using pairing or
 publishing, run both `subspace-relay-client --supports relay-publish-question-v1`
-and `subspace-relay-client --supports relay-pair-once-v1`. If either fails, the
+and `subspace-relay-client --supports relay-pair-once-v1`, then
+`subspace-relay-client --supports relay-revise-in-place-v1`. If any fails, the
 installed client is too old: show the install guidance above and stop. A client
 that supports questions alone cannot safely run this flow. Do not fall back to
-an owner link or publish with unsupported flags.
+an owner link, new-link publication, an unpinned wait or unsupported flags.
 
 ## Publish
 
@@ -51,7 +52,7 @@ Only when the user asks to share a file.
    reviewers to do with this file, naming what it is about ("Pick the tier to
    ship", not "Review this"). It becomes the page's title. Choose it once per
    review and pass the same text on every republish of this review, a revise
-   included: a different wording is a different share link.
+   included: a revision retains the same review question.
 3. After the capability checks and the user's agreement to upload, check pairing
    before publishing for a web decision. Every request using this skill needs a
    web decision unless the user asked only for comments or feedback. Feedback-only
@@ -85,7 +86,8 @@ Only when the user asks to share a file.
    passing the question as one shell-quoted argument. Leave out `--open` if the
    user asked not to open a browser. Use the same explicit relay origin the user
    selected on every command that takes `--relay-url`.
-5. Hand over exactly one share link and its actual `expiry:` from the output:
+5. Hand over exactly one share link and its actual `expiry:` from the output.
+   Retain the full accepted `briefing:` id and `version:` for this round:
 
    > Share link: send this one to reviewers. Anyone holding it can read the copy
    > until `<expiry>`.
@@ -125,7 +127,8 @@ to the existing share: reload it after pairing.
 ## Wait for the decision
 
 Wait automatically after a confirmed paired publish, unless asked not to.
-Use `subspace-relay-client decision <share-url> --with-included` through the
+Use `subspace-relay-client decision <share-url> --briefing <accepted-id> --with-included`
+with the full accepted `briefing:` id from this round, through the
 runtime mechanism in `../r/SKILL.md` (*Wait implementations*). Do not poll
 `feedback` yourself. Start the wait before the hand-over message, then keep
 working with the user. Stop only your own listener if they say "stop waiting".
@@ -140,9 +143,8 @@ working with the user. Stop only your own listener if they say "stop waiting".
 A later decision is kept. Only the last runtime row asks the user to prompt a
 read; otherwise the listener receives the decision.
 
-If `decision --with-included` exits 2 because that flag is unavailable, run
-`decision` without it and read included comments using
-`subspace-relay-client feedback <share-url> --json`.
+An unsupported flag stops this flow with upgrade guidance. Never drop
+`--briefing` or fall back to initial publish or an unpinned wait.
 
 - Exit 0: stdout is one JSON object: `result` is the owner's verified decision
   and `included` lists other reviewers' comments it includes. Act as below.
@@ -162,6 +164,12 @@ If `decision --with-included` exits 2 because that flag is unavailable, run
 - Exits 3 and 4: read `subspace-relay-client feedback <share-url>` once. Report
   a decision marked `binding: no` as not binding; act on nothing. If this read
   fails, omit it: the exit already says there was no owner decision.
+- Exit 5: the waited Briefing was superseded. Report its id and the latest
+  id/version; preserve the local edit. Do not follow the new version or restart
+  the wait automatically. Recovery uses `subspace-relay-client fetch <share-url>
+  --output <new-path>`; fetch never overwrites the old source. A package with
+  multiple Artifacts or resolved References requires `--briefing` on fetch and
+  revise, preserving its portable snapshot.
 - Exit 1: relay the `decision:` stderr line and say waiting stopped. If the
   server says missing or retired, this link cannot keep waiting: report that
   reason and stop. Otherwise offer "wait again"; never retry on your own.
@@ -177,12 +185,23 @@ do exactly this, to that file only:
 
 - `approve`: continue the task the user gave you. It adds no permission the task
   did not have.
+<!-- see docs/adr/0016-a-revision-keeps-its-room-address-and-a-wait-names-its-briefing.md -->
 - `revise`: edit the published file to apply `result.resolution.reason` (when
-  present) and the comments the decision includes, publish the file again with
-  the same question, hand over the new share link as in Publish,
-  and wait on the new share link. An edited file has new bytes, so its share link is new; the old
-  link stays live and decided, and reviewers holding it do not follow. Revoke
-  it only if the user asks.
+  present) and the comments the decision includes. Run
+  `subspace-relay-client revise <share-url> <same-source>` with the original
+  source path and the same share address; use `--briefing` for a portable snapshot.
+  The client supplies that source's actual base. After exit 0, hand over the
+  same share address with the returned full `briefing:`, `version:` and `expiry:`.
+  Wait with that round's accepted id using
+  `subspace-relay-client decision <share-url> --briefing <accepted-id> --with-included`.
+  Exit 5 from revise means a stale base: report the base and latest version,
+  preserve the edit and use fetch to a new path only as explicit recovery.
+  Never silently rebase, edit that new copy or wait on unread material.
+  Exit 1 with `status: accepted-receipt-not-saved` retains the exact operation.
+  Retry that command for verification or storage failures. If it says
+  `source changed`, preserve the edit and use the fetch-to-new-path explicit recovery
+  above; never silently advance that source's base. Do not publish another room.
+  Revoke a room only if the user asks.
 - `hold`: stop, change nothing, and report the reason and the included
   comments.
 
@@ -204,8 +223,9 @@ Reading a `revise`:
 - If the file's SHA-256 is not `result.artifact.rev`, the file changed since the
   review. Say so and ask before editing.
 - If, after applying it, the bytes are unchanged or there was nothing to apply,
-  do not publish and do not wait: the share link would be the same, and
-  `decision` would return the old decision at once. Report it.
+  do not revise and do not wait: there is no requested edit. Report it. An
+  explicit new revision can reuse earlier bytes, but this skill starts no
+  automatic no-change round.
 - Each `revise` is one round. There is no round cap and no automatic restart
   after exit 3.
 
