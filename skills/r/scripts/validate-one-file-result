@@ -182,9 +182,14 @@ jq -s -e --arg artifact "$artifact" --arg revision "$revision" --arg briefing "$
     type == "object" and
     (all(keys[]; . == "type" or . == "id" or . == "briefing" or . == "by" or
       . == "at" or . == "target" or . == "selectors" or . == "kind" or
-      . == "body" or . == "original" or . == "proposed")) and
+      . == "body" or . == "original" or . == "proposed" or . == "provenance")) and
     .type == "Annotation" and (.id | nonempty) and .briefing == $briefing and
-    .by == "person:reviewer" and (.at | nonempty) and .target == "artifact:primary" and
+    (.by | nonempty) and (.at | nonempty) and .target == "artifact:primary" and
+    (if (.provenance == "relay-owner-marked" or .provenance == "relay-owner-unmarked") then
+       $mode != "feedback"
+     else
+       .by == "person:reviewer" and ((has("provenance") | not) or .provenance == "local")
+     end) and
     ((has("selectors") | not) or ((.selectors | type) == "array" and all(.selectors[]; selector))) and
     if .kind == "comment" then
       (.body | nonempty) and (has("original") | not) and (has("proposed") | not)
@@ -286,9 +291,10 @@ if [[ $(jq -r '.status' "$capture") == open ]]; then
         ((has("prefix") | not) or (.prefix | type == "string")) and
         ((has("suffix") | not) or (.suffix | type == "string"));
       def annotation: type == "object" and
-        (all(keys[]; . == "type" or . == "id" or . == "briefing" or . == "by" or . == "at" or . == "target" or . == "selectors" or . == "kind" or . == "body" or . == "original" or . == "proposed")) and
+        (all(keys[]; . == "type" or . == "id" or . == "briefing" or . == "by" or . == "at" or . == "target" or . == "selectors" or . == "kind" or . == "body" or . == "original" or . == "proposed" or . == "provenance")) and
         .type == "Annotation" and (.id | nonempty) and .briefing == $briefing and .by == "person:reviewer" and
         (.at | nonempty) and .target == "artifact:primary" and
+        ((has("provenance") | not) or .provenance == "local") and
         ((has("selectors") | not) or ((.selectors | type) == "array" and all(.selectors[]; selector))) and
         if .kind == "comment" then (.body | nonempty) and (has("original") | not) and (has("proposed") | not)
         elif .kind == "suggestion" then (.original | type == "string") and (.proposed | type == "string") and (.selectors | type == "array" and length > 0) and (has("body") | not)

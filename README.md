@@ -60,7 +60,7 @@ In Claude Code, add the marketplace and install the plugin:
 
 ```sh
 claude plugin marketplace add spacedock-dev/marketplace
-claude plugin install subspace@subspace-beta
+claude plugin install subspace@spacedock
 ```
 
 In Codex, add the marketplace and the plugin:

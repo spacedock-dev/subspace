@@ -311,7 +311,10 @@ live; run it again only if the user wants to keep waiting. Exit 4 means the
 link was revoked or expired. Exit 5 means the accepted Briefing was
 superseded: preserve local work, report the waited id and latest version, and
 stop. Do not drop the pin or restart on unread material; use `remote-review`'s
-explicit fetch/recovery instructions. Exit 1 prints the reason.
+explicit fetch/recovery instructions. Exit 6 means a reviewer sent comments
+without an owner decision; it is never a decision, and `remote-review` says
+what to do. Exit 1 prints the reason. Any other exit, 2 included, means the
+call was refused and no wait ran; `remote-review` says what to tell the user.
 
 ### Host-owned placement
 
